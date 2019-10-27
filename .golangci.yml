@@ -1,0 +1,9 @@
+linters:
+  enable-all: true
+  disable:
+      - godox
+      - lll
+      - wsl
+run:
+  skip-files:
+    - _test.go$
