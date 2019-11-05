@@ -4,7 +4,6 @@ package scache
 
 import (
 	"hash/maphash"
-	"math/rand"
 )
 
 type hasher struct {
@@ -13,13 +12,13 @@ type hasher struct {
 
 func newHasher() hasher {
 	return hasher{
-		seed: maphash.MakeSeed(rand.Uint64()),
+		seed: maphash.MakeSeed(),
 	}
 }
 
 func (h hasher) hash(s string) uint64 {
 	var sh maphash.Hash
 	sh.SetSeed(h.seed)
-	sh.AddString(s)
+	sh.WriteString(s)
 	return sh.Sum64()
 }
