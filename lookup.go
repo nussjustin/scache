@@ -98,7 +98,7 @@ type sfGroupEntry struct {
 //
 // The underlying Cache must be safe for concurrent use.
 //
-// The defaults options when not overriden are:
+// The defaults options when not overridden are:
 //
 //     WithLookupSetTimeout(250 * time.Millisecond)
 //     WithLookupTimeout(250 * time.Millisecond)
