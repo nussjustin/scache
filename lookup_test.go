@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -82,14 +83,20 @@ func TestLookupCache(t *testing.T) {
 			return key, nil
 		}
 
+		var lastMu sync.Mutex
 		var lastErrKey string
 		var lastErr error
 		onError := func(key string, err error) {
+			lastMu.Lock()
+			defer lastMu.Unlock()
 			lastErrKey, lastErr = key, err
 		}
 
 		assertLookupError := func(wantKey, wantErr string) {
 			t.Helper()
+
+			lastMu.Lock()
+			defer lastMu.Unlock()
 
 			if wantKey != lastErrKey {
 				t.Fatalf("failed to assert key in error handler: want %q, got %q", wantKey, lastErrKey)
@@ -111,16 +118,6 @@ func TestLookupCache(t *testing.T) {
 			assertCacheGet(t, c, ctx, "hello", "hello")
 
 			assertLookupError("HELLO", "wrong key: HELLO")
-		}
-
-		{
-			ctx, cancel := context.WithTimeout(ctx, time.Millisecond)
-			defer cancel()
-
-			c := scache.NewLookupCache(&slowCache{getDelay: 250 * time.Millisecond}, lookup, scache.WithLookupErrorHandler(onError))
-
-			assertCacheMiss(t, c, ctx, "Hello")
-			assertLookupError("Hello", context.DeadlineExceeded.Error())
 		}
 	})
 
@@ -155,30 +152,43 @@ func TestLookupCache(t *testing.T) {
 
 		lru := scache.NewLRU(4)
 
+		var lookupDelayMu sync.Mutex
+		lookupDelay := 150 * time.Millisecond
+
 		lookup := func(ctx context.Context, key string) (val interface{}, err error) {
+			lookupDelayMu.Lock()
+			delay := lookupDelay
+			lookupDelayMu.Unlock()
+
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
-			case <-time.After(150 * time.Millisecond):
+			case <-time.After(delay):
 			}
 			return strings.ToUpper(key), nil
 		}
 
-		c := scache.NewLookupCache(lru, lookup)
+		c := scache.NewLookupCache(lru, lookup, scache.WithLookupTimeout(250*time.Millisecond))
 
 		{
 			ctx, cancel := context.WithTimeout(ctx, time.Millisecond)
 			defer cancel()
-			assertCacheMiss(t, c, ctx, "hello")
+			assertCacheMiss(t, c, ctx, "hello1")
 		}
 
 		{
 			ctx, cancel := context.WithCancel(ctx)
 			cancel()
-			assertCacheMiss(t, c, ctx, "hello")
+			assertCacheMiss(t, c, ctx, "hello2")
 		}
 
-		assertCacheGet(t, c, ctx, "hello", "HELLO")
+		assertCacheGet(t, c, ctx, "hello3", "HELLO3")
+
+		lookupDelayMu.Lock()
+		lookupDelay = 350 * time.Millisecond
+		lookupDelayMu.Unlock()
+
+		assertCacheMiss(t, c, ctx, "hello4")
 	})
 
 	t.Run("Nil", func(t *testing.T) {
@@ -207,14 +217,20 @@ func TestLookupCache(t *testing.T) {
 			panic(strings.ToUpper(key))
 		}
 
+		var lastMu sync.Mutex
 		var lastPanicKey string
 		var lastPanic error
 		onPanic := func(key string, v interface{}) {
+			lastMu.Lock()
+			defer lastMu.Unlock()
 			lastPanicKey, lastPanic = key, errors.New(v.(string))
 		}
 
 		assertLookupPanic := func(wantKey, wantPanic string) {
 			t.Helper()
+
+			lastMu.Lock()
+			defer lastMu.Unlock()
 
 			if wantKey != lastPanicKey {
 				t.Fatalf("failed to assert key in panic handler: want %q, got %q", wantKey, lastPanicKey)
@@ -278,9 +294,9 @@ func TestLookupCache(t *testing.T) {
 
 		lru := scache.NewLRU(4)
 
-		var lookupCount int
+		var lookupCount uint64
 		lookup := func(ctx context.Context, key string) (val interface{}, err error) {
-			lookupCount++
+			atomic.AddUint64(&lookupCount, 1)
 			return strings.ToUpper(key), nil
 		}
 
@@ -289,8 +305,8 @@ func TestLookupCache(t *testing.T) {
 		assertCacheGet(t, c, ctx, "hello", "HELLO")
 		assertCacheGet(t, c, ctx, "HeLlO", "HELLO")
 		assertCacheGet(t, c, ctx, "HELLO", "HELLO")
-		if 3 != lookupCount {
-			t.Fatalf("failed to assert lookup count: want %d, got %d", 3, lookupCount)
+		if want, got := uint64(3), atomic.LoadUint64(&lookupCount); want != got {
+			t.Fatalf("failed to assert lookup count: want %d, got %d", want, got)
 		}
 
 		assertCacheGetWithWait(t, lru, ctx, "hello", "HELLO")
@@ -301,8 +317,8 @@ func TestLookupCache(t *testing.T) {
 		assertCacheGet(t, c, ctx, "HeLlO", "HELLO")
 		assertCacheGet(t, c, ctx, "HELLO", "HELLO")
 		assertCacheGet(t, c, ctx, "hELLo", "HELLO")
-		if 4 != lookupCount {
-			t.Fatalf("failed to assert lookup count: want %d, got %d", 3, lookupCount)
+		if want, got := uint64(4), atomic.LoadUint64(&lookupCount); want != got {
+			t.Fatalf("failed to assert lookup count: want %d, got %d", want, got)
 		}
 
 		assertCacheGetWithWait(t, lru, ctx, "hELLo", "HELLO")

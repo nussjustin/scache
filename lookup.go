@@ -27,8 +27,11 @@ type LookupFunc func(ctx context.Context, key string) (val interface{}, err erro
 type LookupOpt func(*lookupOpts)
 
 type lookupOpts struct {
-	errFn      func(key string, err error)
-	panicFn    func(key string, v interface{})
+	lookupErrFn   func(key string, err error)
+	lookupTimeout time.Duration
+
+	panicFn func(key string, v interface{})
+
 	setErrFn   func(key string, err error)
 	setTimeout time.Duration
 }
@@ -39,7 +42,7 @@ type lookupOpts struct {
 // If nil (the default) errors will be ignored.
 func WithLookupErrorHandler(f func(key string, err error)) LookupOpt {
 	return func(opts *lookupOpts) {
-		opts.errFn = f
+		opts.lookupErrFn = f
 	}
 }
 
@@ -64,11 +67,16 @@ func WithLookupSetErrorHandler(f func(key string, err error)) LookupOpt {
 }
 
 // WithLookupSetTimeout sets the timeout for setting values in the underlying Cache.
-//
-// The default value is 100ms.
 func WithLookupSetTimeout(d time.Duration) LookupOpt {
 	return func(opts *lookupOpts) {
 		opts.setTimeout = d
+	}
+}
+
+// WithLookupTimeout sets the timeout for looking up fresh values.
+func WithLookupTimeout(d time.Duration) LookupOpt {
+	return func(opts *lookupOpts) {
+		opts.lookupTimeout = d
 	}
 }
 
@@ -89,9 +97,16 @@ type sfGroupEntry struct {
 // looking up missing values.
 //
 // The underlying Cache must be safe for concurrent use.
+//
+// The defaults options when not overriden are:
+//
+//     WithLookupSetTimeout(250 * time.Millisecond)
+//     WithLookupTimeout(250 * time.Millisecond)
+//
 func NewLookupCache(c Cache, f LookupFunc, opts ...LookupOpt) *LookupCache {
 	lopts := lookupOpts{
-		setTimeout: 250 * time.Millisecond,
+		lookupTimeout: 250 * time.Millisecond,
+		setTimeout:    250 * time.Millisecond,
 	}
 	for _, opt := range opts {
 		opt(&lopts)
@@ -130,7 +145,7 @@ func (l *LookupCache) Get(ctx context.Context, key string) (val interface{}, ok 
 	s.mu.Unlock()
 
 	if !ok {
-		g.lookup(ctx, s, key)
+		go g.lookup(s, key)
 	}
 
 	return g.wait(ctx)
@@ -151,7 +166,7 @@ func (l *LookupCache) set(key string, val interface{}) {
 	}
 }
 
-func (l *sfGroupEntry) lookup(ctx context.Context, shard *sfGroup, key string) {
+func (l *sfGroupEntry) lookup(shard *sfGroup, key string) {
 	defer func() {
 		if v := recover(); v != nil {
 			l.val, l.ok = nil, false
@@ -163,29 +178,32 @@ func (l *sfGroupEntry) lookup(ctx context.Context, shard *sfGroup, key string) {
 
 		close(l.done)
 
-		if l.ok {
-			go l.lc.set(key, l.val)
-		}
-
 		shard.mu.Lock()
 		delete(shard.groups, key)
 		shard.mu.Unlock()
+
+		if l.ok {
+			l.lc.set(key, l.val)
+		}
 	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), l.lc.lookupTimeout)
+	defer cancel()
 
 	if val, ok := l.lc.c.Get(ctx, key); ok {
 		l.val, l.ok = val, true
 		return
 	} else if ctx.Err() != nil {
-		if l.lc.errFn != nil {
-			l.lc.errFn(key, ctx.Err())
+		if l.lc.lookupErrFn != nil {
+			l.lc.lookupErrFn(key, ctx.Err())
 		}
 		return
 	}
 
 	if val, err := l.lc.f(ctx, key); err == nil {
 		l.val, l.ok = val, true
-	} else if l.lc.errFn != nil {
-		l.lc.errFn(key, err)
+	} else if l.lc.lookupErrFn != nil {
+		l.lc.lookupErrFn(key, err)
 	}
 }
 
