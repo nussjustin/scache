@@ -1,21 +1,24 @@
 package scache
 
 import (
-	"container/list"
 	"context"
 	"sync"
 	"time"
 )
 
 type LRU struct {
-	mu      sync.Mutex
-	entries map[string]*list.Element
-	list    *list.List
-	size    int
-	ttl     time.Duration
+	size int
+	ttl  time.Duration
+
+	mu         sync.Mutex
+	entries    map[string]*lruItem
+	head, tail *lruItem
+	free       *lruItem
 }
 
 type lruItem struct {
+	prev, next *lruItem
+
 	key      string
 	val      interface{}
 	expireAt time.Time
@@ -37,16 +40,66 @@ func NewLRU(size int) *LRU {
 // If ttl is <= 0, no TTL is used. This is the same as using NewLRU.
 func NewLRUWithTTL(size int, ttl time.Duration) *LRU {
 	return &LRU{
-		entries: make(map[string]*list.Element),
-		list:    list.New(),
+		entries: make(map[string]*lruItem),
 		size:    size,
-		ttl: ttl,
+		ttl:     ttl,
 	}
 }
 
-func (l *LRU) deleteLocked(ele *list.Element) {
-	delete(l.entries, ele.Value.(*lruItem).key)
-	l.list.Remove(ele)
+func (l *LRU) addLocked(key string, val interface{}, expireAt time.Time) {
+	var item *lruItem
+	if l.free != nil {
+		item, l.free = l.free, nil
+		item.key, item.val, item.expireAt = key, val, expireAt
+	} else {
+		item = &lruItem{key: key, val: val, expireAt: expireAt}
+	}
+
+	item.next = l.head
+	if l.head != nil {
+		l.head.prev = item
+		l.head = item
+	} else {
+		l.head, l.tail = item, item
+	}
+	l.entries[item.key] = item
+}
+
+func (l *LRU) deleteLocked(item *lruItem) {
+	delete(l.entries, item.key)
+	l.unmountLocked(item)
+
+	item.key, item.val = "", nil
+	l.free = item
+}
+
+func (l *LRU) moveToFrontLocked(item *lruItem) {
+	if l.head == item {
+		return
+	}
+	l.unmountLocked(item)
+	if l.head != nil {
+		item.next, l.head.prev = l.head, item
+	} else if l.tail == nil {
+		l.tail = l.head
+	}
+	l.head = item
+}
+
+func (l *LRU) unmountLocked(item *lruItem) {
+	if l.head == item {
+		l.head = item.next
+	}
+	if l.tail == item {
+		l.tail = item.prev
+	}
+	if item.next != nil {
+		item.next.prev = item.prev
+	}
+	if item.prev != nil {
+		item.prev.next = item.next
+	}
+	item.next, item.prev = nil, nil
 }
 
 // Get implements the Cache interface.
@@ -54,14 +107,12 @@ func (l *LRU) Get(ctx context.Context, key string) (val interface{}, ok bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	var ele *list.Element
-	if ele = l.entries[key]; ele != nil {
-		item := ele.Value.(*lruItem)
+	if item := l.entries[key]; item != nil {
 		if item.expireAt.IsZero() || time.Until(item.expireAt) > 0 {
-			l.list.MoveToFront(ele)
-			return ele.Value.(*lruItem).val, true
+			l.moveToFrontLocked(item)
+			return item.val, true
 		}
-		l.deleteLocked(ele)
+		l.deleteLocked(item)
 	}
 	return
 }
@@ -84,16 +135,16 @@ func (l *LRU) Set(ctx context.Context, key string, val interface{}) error {
 		expireAt = time.Now().Add(l.ttl)
 	}
 
-	ele, ok := l.entries[key]
-	if ok {
-		*ele.Value.(*lruItem) = lruItem{key: key, val: val, expireAt: expireAt}
-		l.list.MoveToFront(ele)
+	if item := l.entries[key]; item != nil {
+		item.expireAt = expireAt
+		item.val = val
+		l.moveToFrontLocked(item)
 		return nil
 	}
 	if len(l.entries) >= l.size {
-		l.deleteLocked(l.list.Back())
+		l.deleteLocked(l.tail)
 	}
-	l.entries[key] = l.list.PushFront(&lruItem{key: key, val: val, expireAt: expireAt})
+	l.addLocked(key, val, expireAt)
 	return nil
 }
 

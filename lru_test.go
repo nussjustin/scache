@@ -170,7 +170,7 @@ func BenchmarkLRU(b *testing.B) {
 
 			b.ResetTimer()
 
-			for i := b.N; i < b.N*2; i++ {
+			for i := 0; i < b.N; i++ {
 				key := keys[i%len(keys)]
 
 				if err := c.Set(ctx, key, key); err != nil {
