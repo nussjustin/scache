@@ -1,4 +1,4 @@
-package scache_test
+package lookup_test
 
 import (
 	"context"
@@ -12,7 +12,51 @@ import (
 	"time"
 
 	"github.com/nussjustin/scache"
+	"github.com/nussjustin/scache/lookup"
 )
+
+type roCache interface {
+	Get(ctx context.Context, key string) (val interface{}, ok bool)
+}
+
+func assertCacheGet(tb testing.TB, c roCache, ctx context.Context, key string, want interface{}) {
+	tb.Helper()
+
+	got, ok := c.Get(ctx, key)
+	if !ok {
+		tb.Fatalf("failed to get key %q", key)
+	}
+
+	if !reflect.DeepEqual(want, got) {
+		tb.Fatalf("failed to assert value: want %v got %v", want, got)
+	}
+}
+
+func assertCacheMiss(tb testing.TB, c roCache, ctx context.Context, key string) {
+	tb.Helper()
+
+	if val, ok := c.Get(ctx, key); ok {
+		tb.Fatalf("failed to assert cache miss: got value %v", val)
+	}
+}
+
+func assertCacheSet(tb testing.TB, c scache.Cache, ctx context.Context, key string, val interface{}) {
+	tb.Helper()
+
+	if err := c.Set(ctx, key, val); err != nil {
+		tb.Fatalf("failed to set key %q to value %q: %s", key, val, err)
+	}
+}
+
+func assertError(tb testing.TB, err error, want string) {
+	tb.Helper()
+
+	if err == nil {
+		tb.Fatalf("failed to assert error: want %q, got <nil>", want)
+	} else if got := err.Error(); want != got {
+		tb.Fatalf("failed to assert error: want %q, got %q", want, got)
+	}
+}
 
 type slowCache struct {
 	c        scache.Cache
@@ -76,7 +120,7 @@ func TestLookupCache(t *testing.T) {
 
 		lru := scache.NewLRU(4)
 
-		lookup := func(ctx context.Context, key string) (val interface{}, err error) {
+		lookupFunc := func(ctx context.Context, key string) (val interface{}, err error) {
 			if key != "hello" {
 				return nil, fmt.Errorf("wrong key: %s", key)
 			}
@@ -105,7 +149,7 @@ func TestLookupCache(t *testing.T) {
 		}
 
 		{
-			c := scache.NewLookupCache(lru, lookup, scache.WithLookupErrorHandler(onError))
+			c := lookup.NewCache(lru, lookupFunc, lookup.WithErrorHandler(onError))
 
 			assertCacheGet(t, c, ctx, "hello", "hello")
 
@@ -126,8 +170,8 @@ func TestLookupCache(t *testing.T) {
 		defer cancel()
 
 		sc := &slowCache{getDelay: 250 * time.Millisecond}
-		c := scache.NewLookupCache(sc, func(_ context.Context, _ string) (val interface{}, err error) {
-			t.Fatal("LookupFunc called unexpectedly")
+		c := lookup.NewCache(sc, func(_ context.Context, _ string) (val interface{}, err error) {
+			t.Fatal("Func called unexpectedly")
 			return nil, nil
 		})
 
@@ -155,7 +199,7 @@ func TestLookupCache(t *testing.T) {
 		var lookupDelayMu sync.Mutex
 		lookupDelay := 150 * time.Millisecond
 
-		lookup := func(ctx context.Context, key string) (val interface{}, err error) {
+		lookupFunc := func(ctx context.Context, key string) (val interface{}, err error) {
 			lookupDelayMu.Lock()
 			delay := lookupDelay
 			lookupDelayMu.Unlock()
@@ -168,7 +212,7 @@ func TestLookupCache(t *testing.T) {
 			return strings.ToUpper(key), nil
 		}
 
-		c := scache.NewLookupCache(lru, lookup, scache.WithLookupTimeout(250*time.Millisecond))
+		c := lookup.NewCache(lru, lookupFunc, lookup.WithTimeout(250*time.Millisecond))
 
 		{
 			ctx, cancel := context.WithTimeout(ctx, time.Millisecond)
@@ -197,11 +241,11 @@ func TestLookupCache(t *testing.T) {
 
 		lru := scache.NewLRU(4)
 
-		lookup := func(ctx context.Context, key string) (val interface{}, err error) {
+		lookupFunc := func(ctx context.Context, key string) (val interface{}, err error) {
 			return nil, nil
 		}
 
-		c := scache.NewLookupCache(lru, lookup)
+		c := lookup.NewCache(lru, lookupFunc)
 
 		assertCacheGet(t, c, ctx, "hello", nil)
 		assertCacheGetWithWait(t, c, ctx, "hello", nil)
@@ -213,7 +257,7 @@ func TestLookupCache(t *testing.T) {
 
 		lru := scache.NewLRU(4)
 
-		lookup := func(ctx context.Context, key string) (val interface{}, err error) {
+		lookupFunc := func(ctx context.Context, key string) (val interface{}, err error) {
 			panic(strings.ToUpper(key))
 		}
 
@@ -238,12 +282,12 @@ func TestLookupCache(t *testing.T) {
 			assertError(t, lastPanic, wantPanic)
 		}
 
-		c := scache.NewLookupCache(lru, lookup, scache.WithLookupPanicHandler(onPanic))
+		c := lookup.NewCache(lru, lookupFunc, lookup.WithPanicHandler(onPanic))
 
 		assertCacheMiss(t, c, ctx, "Hello")
 		assertLookupPanic("Hello", "HELLO")
 
-		c = scache.NewLookupCache(lru, lookup, scache.WithLookupPanicHandler(nil))
+		c = lookup.NewCache(lru, lookupFunc, lookup.WithPanicHandler(nil))
 		assertCacheMiss(t, c, ctx, "Hello") // check that the panic is still handled
 	})
 
@@ -251,7 +295,7 @@ func TestLookupCache(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		lookup := func(_ context.Context, key string) (val interface{}, err error) {
+		lookupFunc := func(_ context.Context, key string) (val interface{}, err error) {
 			return strings.ToUpper(key), nil
 		}
 
@@ -275,14 +319,14 @@ func TestLookupCache(t *testing.T) {
 		}
 
 		sc := &slowCache{setDelay: 500 * time.Millisecond, c: scache.NewLRU(4)}
-		c := scache.NewLookupCache(
+		c := lookup.NewCache(
 			sc,
-			lookup,
-			scache.WithLookupSetErrorHandler(func(key string, err error) {
+			lookupFunc,
+			lookup.WithSetErrorHandler(func(key string, err error) {
 				lastErrKey, lastErr = key, err
 				lastErrC <- struct{}{}
 			}),
-			scache.WithLookupSetTimeout(time.Millisecond))
+			lookup.WithSetTimeout(time.Millisecond))
 
 		assertCacheGet(t, c, ctx, "hello", "HELLO")
 		assertSetError("hello", context.DeadlineExceeded.Error())
@@ -295,12 +339,12 @@ func TestLookupCache(t *testing.T) {
 		lru := scache.NewLRU(4)
 
 		var lookupCount uint64
-		lookup := func(ctx context.Context, key string) (val interface{}, err error) {
+		lookupFunc := func(ctx context.Context, key string) (val interface{}, err error) {
 			atomic.AddUint64(&lookupCount, 1)
 			return strings.ToUpper(key), nil
 		}
 
-		c := scache.NewLookupCache(lru, lookup)
+		c := lookup.NewCache(lru, lookupFunc)
 
 		assertCacheGet(t, c, ctx, "hello", "HELLO")
 		assertCacheGet(t, c, ctx, "HeLlO", "HELLO")
@@ -339,7 +383,7 @@ func TestLookupCacheConcurrency(t *testing.T) {
 		"key4",
 	}
 
-	lookup := func(_ context.Context, key string) (val interface{}, err error) {
+	lookupFunc := func(_ context.Context, key string) (val interface{}, err error) {
 		time.Sleep(25 * time.Millisecond)
 		callsMu.Lock()
 		calls[key]++
@@ -347,7 +391,7 @@ func TestLookupCacheConcurrency(t *testing.T) {
 		return key, nil
 	}
 
-	c := scache.NewLookupCache(scache.NewLRU(4), lookup)
+	c := lookup.NewCache(scache.NewLRU(4), lookupFunc)
 
 	checkKeys := func() {
 		var wg sync.WaitGroup

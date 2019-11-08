@@ -11,11 +11,7 @@ import (
 	"github.com/nussjustin/scache"
 )
 
-type roCache interface {
-	Get(ctx context.Context, key string) (val interface{}, ok bool)
-}
-
-func assertCacheGet(tb testing.TB, c roCache, ctx context.Context, key string, want interface{}) {
+func assertCacheGet(tb testing.TB, c scache.Cache, ctx context.Context, key string, want interface{}) {
 	tb.Helper()
 
 	got, ok := c.Get(ctx, key)
@@ -28,7 +24,7 @@ func assertCacheGet(tb testing.TB, c roCache, ctx context.Context, key string, w
 	}
 }
 
-func assertCacheMiss(tb testing.TB, c roCache, ctx context.Context, key string) {
+func assertCacheMiss(tb testing.TB, c scache.Cache, ctx context.Context, key string) {
 	tb.Helper()
 
 	if val, ok := c.Get(ctx, key); ok {
@@ -51,16 +47,6 @@ func assertCacheSetError(tb testing.TB, c scache.Cache, ctx context.Context, key
 		tb.Fatalf("failed to assert error for key %q: got value %v", key, val)
 	} else if !errors.Is(err, werr) {
 		tb.Fatalf("failed to assert error for key %q: want %q got %q", key, werr, err)
-	}
-}
-
-func assertError(tb testing.TB, err error, want string) {
-	tb.Helper()
-
-	if err == nil {
-		tb.Fatalf("failed to assert error: want %q, got <nil>", want)
-	} else if got := err.Error(); want != got {
-		tb.Fatalf("failed to assert error: want %q, got %q", want, got)
 	}
 }
 

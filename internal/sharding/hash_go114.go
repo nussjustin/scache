@@ -1,22 +1,20 @@
 // +build go1.14
 
-package scache
+package sharding
 
-import (
-	"hash/maphash"
-)
+import "hash/maphash"
 
-type hasher struct {
+type Hasher struct {
 	seed maphash.Seed
 }
 
-func newHasher() hasher {
-	return hasher{
+func NewHasher() Hasher {
+	return Hasher{
 		seed: maphash.MakeSeed(),
 	}
 }
 
-func (h hasher) hash(s string) uint64 {
+func (h Hasher) Hash(s string) uint64 {
 	var sh maphash.Hash
 	sh.SetSeed(h.seed)
 	sh.WriteString(s)

@@ -1,30 +1,33 @@
-package scache
+package lookup
 
 import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/nussjustin/scache"
+	"github.com/nussjustin/scache/internal/sharding"
 )
 
-// LookupCache implements a cache wrapper where on each cache miss the value will be looked
+// Cache implements a cache wrapper where on each cache miss the value will be looked
 // up via a cache-global lookup function and cached in the underlying cache for further calls.
 //
-// LookupCache explicitly does not implement the Cache interface.
-type LookupCache struct {
+// Cache explicitly does not implement the Cache interface.
+type Cache struct {
 	lookupOpts
 
-	c Cache
-	f LookupFunc
+	c scache.Cache
+	f Func
 
-	hasher hasher
+	hasher sharding.Hasher
 	shards []sfGroup
 }
 
-// LookupFunc defines a function for looking up values that will be placed in a LookupCache.
-type LookupFunc func(ctx context.Context, key string) (val interface{}, err error)
+// Func defines a function for looking up values that will be placed in a Cache.
+type Func func(ctx context.Context, key string) (val interface{}, err error)
 
-// LookupOpt is the type for functions that can be used to customize a LookupCache.
-type LookupOpt func(*lookupOpts)
+// Opt is the type for functions that can be used to customize a Cache.
+type Opt func(*lookupOpts)
 
 type lookupOpts struct {
 	lookupErrFn   func(key string, err error)
@@ -36,45 +39,45 @@ type lookupOpts struct {
 	setTimeout time.Duration
 }
 
-// WithLookupErrorHandler can be used to set a handler function that is called when a Lookup
+// WithErrorHandler can be used to set a handler function that is called when a Lookup
 // returns an error.
 //
 // If nil (the default) errors will be ignored.
-func WithLookupErrorHandler(f func(key string, err error)) LookupOpt {
+func WithErrorHandler(f func(key string, err error)) Opt {
 	return func(opts *lookupOpts) {
 		opts.lookupErrFn = f
 	}
 }
 
-// WithLookupPanicHandler can be used to set a handler function that is called when a Lookup
+// WithPanicHandler can be used to set a handler function that is called when a Lookup
 // panics.
 //
 // If nil (the default) panics will be ignored.
-func WithLookupPanicHandler(f func(key string, v interface{})) LookupOpt {
+func WithPanicHandler(f func(key string, v interface{})) Opt {
 	return func(opts *lookupOpts) {
 		opts.panicFn = f
 	}
 }
 
-// WithLookupSetErrorHandler can be used to set a handler function that is called when
+// WithSetErrorHandler can be used to set a handler function that is called when
 // setting a looked up value in the underlying Cache returns an error.
 //
 // If nil (the default) errors will be ignored.
-func WithLookupSetErrorHandler(f func(key string, err error)) LookupOpt {
+func WithSetErrorHandler(f func(key string, err error)) Opt {
 	return func(opts *lookupOpts) {
 		opts.setErrFn = f
 	}
 }
 
-// WithLookupSetTimeout sets the timeout for setting values in the underlying Cache.
-func WithLookupSetTimeout(d time.Duration) LookupOpt {
+// WithSetTimeout sets the timeout for setting values in the underlying Cache.
+func WithSetTimeout(d time.Duration) Opt {
 	return func(opts *lookupOpts) {
 		opts.setTimeout = d
 	}
 }
 
-// WithLookupTimeout sets the timeout for looking up fresh values.
-func WithLookupTimeout(d time.Duration) LookupOpt {
+// WithTimeout sets the timeout for looking up fresh values.
+func WithTimeout(d time.Duration) Opt {
 	return func(opts *lookupOpts) {
 		opts.lookupTimeout = d
 	}
@@ -86,24 +89,24 @@ type sfGroup struct {
 }
 
 type sfGroupEntry struct {
-	lc   *LookupCache
+	lc   *Cache
 	done chan struct{}
 
 	val interface{}
 	ok  bool
 }
 
-// NewLookupCache returns a new *LookupCache using c as the underlying Cache and f for
+// NewCache returns a new *Cache using c as the underlying Cache and f for
 // looking up missing values.
 //
 // The underlying Cache must be safe for concurrent use.
 //
 // The defaults options when not overridden are:
 //
-//     WithLookupSetTimeout(250 * time.Millisecond)
-//     WithLookupTimeout(250 * time.Millisecond)
+//     WithSetTimeout(250 * time.Millisecond)
+//     WithTimeout(250 * time.Millisecond)
 //
-func NewLookupCache(c Cache, f LookupFunc, opts ...LookupOpt) *LookupCache {
+func NewCache(c scache.Cache, f Func, opts ...Opt) *Cache {
 	lopts := lookupOpts{
 		lookupTimeout: 250 * time.Millisecond,
 		setTimeout:    250 * time.Millisecond,
@@ -117,13 +120,13 @@ func NewLookupCache(c Cache, f LookupFunc, opts ...LookupOpt) *LookupCache {
 		ss[i].groups = make(map[string]*sfGroupEntry)
 	}
 
-	return &LookupCache{
+	return &Cache{
 		lookupOpts: lopts,
 
 		c: c,
 		f: f,
 
-		hasher: newHasher(),
+		hasher: sharding.NewHasher(),
 		shards: ss,
 	}
 }
@@ -131,9 +134,9 @@ func NewLookupCache(c Cache, f LookupFunc, opts ...LookupOpt) *LookupCache {
 // Get returns the value for the given key.
 //
 // If the key is not found in the underlying Cache it will be looked up using the lookup
-// function specified in NewLookupCache.
-func (l *LookupCache) Get(ctx context.Context, key string) (val interface{}, ok bool) {
-	idx := int(l.hasher.hash(key) % uint64(len(l.shards)))
+// function specified in NewCache.
+func (l *Cache) Get(ctx context.Context, key string) (val interface{}, ok bool) {
+	idx := int(l.hasher.Hash(key) % uint64(len(l.shards)))
 
 	s := &l.shards[idx]
 	s.mu.Lock()
@@ -151,7 +154,7 @@ func (l *LookupCache) Get(ctx context.Context, key string) (val interface{}, ok 
 	return g.wait(ctx)
 }
 
-func (l *LookupCache) set(key string, val interface{}) {
+func (l *Cache) set(key string, val interface{}) {
 	defer func() {
 		if v := recover(); v != nil && l.panicFn != nil {
 			l.panicFn(key, v)

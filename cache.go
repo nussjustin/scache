@@ -3,6 +3,8 @@ package scache
 import (
 	"context"
 	"fmt"
+
+	"github.com/nussjustin/scache/internal/sharding"
 )
 
 // Cache defines methods for setting and retrieving values in a Cache
@@ -19,7 +21,7 @@ type Cache interface {
 // ShardedCache implements a Cache that partitions entries into multuple underlying Cache
 // instances for reduced locking and increased scalability.
 type ShardedCache struct {
-	hasher hasher
+	hasher sharding.Hasher
 	shards []Cache
 }
 
@@ -45,7 +47,7 @@ func NewShardedCache(shards int, factory func(shard int) Cache) (*ShardedCache, 
 		ss[i] = factory(i)
 	}
 
-	return &ShardedCache{hasher: newHasher(), shards: ss}, nil
+	return &ShardedCache{hasher: sharding.NewHasher(), shards: ss}, nil
 }
 
 // Get implements the Cache interface.
@@ -70,6 +72,6 @@ func (s *ShardedCache) Set(ctx context.Context, key string, val interface{}) err
 
 // Shard returns the underlying Cache used for the given key.
 func (s *ShardedCache) Shard(key string) Cache {
-	idx := int(s.hasher.hash(key) % uint64(len(s.shards)))
+	idx := int(s.hasher.Hash(key) % uint64(len(s.shards)))
 	return s.shards[idx]
 }
