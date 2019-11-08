@@ -3,6 +3,7 @@ package scache_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/nussjustin/scache"
 )
@@ -83,6 +84,45 @@ func TestLRU(t *testing.T) {
 	assertCacheGet(t, c, ctx, key3, "3!!")
 	assertCacheGet(t, c, ctx, key4, "4!")
 	assertLen(t, 3, c)
+}
+
+func TestLRUWithTTL(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	c := scache.NewLRUWithTTL(2, 150 * time.Millisecond)
+
+	assertCacheSet(t, c, ctx, "hello", "world")
+	assertCacheGet(t, c, ctx, "hello", "world")
+	assertLen(t, 1, c)
+
+	time.Sleep(150 * time.Millisecond)
+
+	assertLen(t, 1, c)
+	assertCacheMiss(t, c, ctx, "hello")
+
+	assertCacheSet(t, c, ctx, "hello", "world!")
+	assertCacheGet(t, c, ctx, "hello", "world!")
+	assertLen(t, 1, c)
+
+	time.Sleep(50 * time.Millisecond)
+
+	assertCacheSet(t, c, ctx, "foo", "bar")
+	assertCacheGet(t, c, ctx, "foo", "bar")
+	assertLen(t, 2, c)
+
+	time.Sleep(100 * time.Millisecond)
+
+	assertLen(t, 2, c)
+	assertCacheMiss(t, c, ctx, "hello")
+	assertLen(t, 1, c)
+	assertCacheGet(t, c, ctx, "foo", "bar")
+
+	time.Sleep(50 * time.Millisecond)
+
+	assertLen(t, 1, c)
+	assertCacheMiss(t, c, ctx, "foo")
+	assertLen(t, 0, c)
 }
 
 func BenchmarkLRU(b *testing.B) {
