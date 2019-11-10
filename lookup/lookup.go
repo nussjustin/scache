@@ -181,13 +181,13 @@ func (l *sfGroupEntry) lookup(shard *sfGroup, key string) {
 
 		close(l.done)
 
-		shard.mu.Lock()
-		delete(shard.groups, key)
-		shard.mu.Unlock()
-
 		if l.miss && l.ok {
 			l.lc.set(key, l.val)
 		}
+
+		shard.mu.Lock()
+		delete(shard.groups, key)
+		shard.mu.Unlock()
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), l.lc.lookupTimeout)
