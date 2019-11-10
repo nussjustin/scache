@@ -15,11 +15,11 @@ import (
 	"github.com/nussjustin/scache/lookup"
 )
 
-type roCache interface {
+type getter interface {
 	Get(ctx context.Context, key string) (val interface{}, ok bool)
 }
 
-func assertCacheGet(tb testing.TB, c roCache, ctx context.Context, key string, want interface{}) {
+func assertCacheGet(tb testing.TB, c getter, ctx context.Context, key string, want interface{}) {
 	tb.Helper()
 
 	got, ok := c.Get(ctx, key)
@@ -32,7 +32,7 @@ func assertCacheGet(tb testing.TB, c roCache, ctx context.Context, key string, w
 	}
 }
 
-func assertCacheMiss(tb testing.TB, c roCache, ctx context.Context, key string) {
+func assertCacheMiss(tb testing.TB, c getter, ctx context.Context, key string) {
 	tb.Helper()
 
 	if val, ok := c.Get(ctx, key); ok {
@@ -56,6 +56,21 @@ func assertError(tb testing.TB, err error, want string) {
 	} else if got := err.Error(); want != got {
 		tb.Fatalf("failed to assert error: want %q, got %q", want, got)
 	}
+}
+
+type statsCache struct {
+	c scache.Cache
+	gets, sets uint64
+}
+
+func (s *statsCache) Get(ctx context.Context, key string) (val interface{}, ok bool) {
+	atomic.AddUint64(&s.gets, 1)
+	return s.c.Get(ctx, key)
+}
+
+func (s *statsCache) Set(ctx context.Context, key string, val interface{}) error {
+	atomic.AddUint64(&s.sets, 1)
+	return s.c.Set(ctx, key, val)
 }
 
 type slowCache struct {
@@ -92,7 +107,7 @@ func (s *slowCache) Set(ctx context.Context, key string, val interface{}) error 
 	}
 }
 
-func assertCacheGetWithWait(tb testing.TB, c roCache, ctx context.Context, key string, want interface{}) {
+func assertCacheGetWithWait(tb testing.TB, c getter, ctx context.Context, key string, want interface{}) {
 	tb.Helper()
 
 	var got interface{}
@@ -249,6 +264,30 @@ func TestLookupCache(t *testing.T) {
 
 		assertCacheGet(t, c, ctx, "hello", nil)
 		assertCacheGetWithWait(t, c, ctx, "hello", nil)
+	})
+
+	t.Run("No Update on Hit", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		stats := &statsCache{c: mapCache{"hello": "world"}}
+
+		c := lookup.NewCache(stats, func(ctx context.Context, key string) (val interface{}, err error) {
+			panic("lookup function called")
+		})
+
+		assertCacheGet(t, c, ctx, "hello", "world")
+
+		// wait for async goroutine that would set the value
+		time.Sleep(250 * time.Millisecond)
+
+		if want, got := uint64(1), atomic.LoadUint64(&stats.gets); want != got {
+			t.Errorf("failed to assert get calls: want %d, got %d", want, got)
+		}
+
+		if want, got := uint64(0), atomic.LoadUint64(&stats.sets); want != got {
+			t.Errorf("failed to assert set calls: want %d, got %d", want, got)
+		}
 	})
 
 	t.Run("Panic", func(t *testing.T) {

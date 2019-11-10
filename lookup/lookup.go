@@ -92,8 +92,8 @@ type sfGroupEntry struct {
 	lc   *Cache
 	done chan struct{}
 
-	val interface{}
-	ok  bool
+	val      interface{}
+	miss, ok bool
 }
 
 // NewCache returns a new *Cache using c as the underlying Cache and f for
@@ -185,7 +185,7 @@ func (l *sfGroupEntry) lookup(shard *sfGroup, key string) {
 		delete(shard.groups, key)
 		shard.mu.Unlock()
 
-		if l.ok {
+		if l.miss && l.ok {
 			l.lc.set(key, l.val)
 		}
 	}()
@@ -202,6 +202,8 @@ func (l *sfGroupEntry) lookup(shard *sfGroup, key string) {
 		}
 		return
 	}
+
+	l.miss = true
 
 	if val, err := l.lc.f(ctx, key); err == nil {
 		l.val, l.ok = val, true
