@@ -90,7 +90,7 @@ func TestLRUWithTTL(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	c := scache.NewLRUWithTTL(2, 150 * time.Millisecond)
+	c := scache.NewLRUWithTTL(2, 150*time.Millisecond)
 
 	assertCacheSet(t, c, ctx, "hello", "world")
 	assertCacheGet(t, c, ctx, "hello", "world")

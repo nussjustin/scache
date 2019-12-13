@@ -194,7 +194,7 @@ func (l *sfGroupEntry) lookup(shard *sfGroup, key string) {
 	defer cancel()
 
 	if val, ok := l.lc.c.Get(ctx, key); ok {
-		l.val, l.ok = val, true
+		l.val, l.ok = val, ok
 		return
 	} else if ctx.Err() != nil {
 		if l.lc.lookupErrFn != nil {

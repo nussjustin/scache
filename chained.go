@@ -1,6 +1,8 @@
 package scache
 
-import "context"
+import (
+	"context"
+)
 
 type chainedCache struct {
 	cs []Cache
