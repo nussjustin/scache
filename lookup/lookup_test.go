@@ -372,8 +372,10 @@ func TestLookupCache(t *testing.T) {
 			lookup.WithRefreshAfter(1*time.Second))
 
 		assertCacheGet(t, c, ctx, "hello", 1)
+		assertCacheGet(t, lru, ctx, "hello", 1)
 		ft.Add(1 * time.Second)
 		assertCacheGet(t, c, ctx, "hello", 2)
+		assertCacheGet(t, lru, ctx, "hello", 2)
 	})
 
 	t.Run("Refresh Error", func(t *testing.T) {
