@@ -409,9 +409,11 @@ func TestLookupCache(t *testing.T) {
 
 		stats := &statsCache{c: lru}
 
+		var lookups uint64
 		c := lookup.NewCache(
 			stats,
 			func(_ context.Context, key string) (val interface{}, err error) {
+				atomic.AddUint64(&lookups, 1)
 				return nil, errors.New("some error")
 			},
 			lookup.WithRefreshAfter(1*time.Second))
@@ -422,15 +424,19 @@ func TestLookupCache(t *testing.T) {
 
 		assertCacheGet(t, c, ctx, "hello", 1)
 
-		time.Sleep(25 * time.Millisecond) // wait for the singleflight group do close
+		time.Sleep(25 * time.Millisecond) // wait for the singleflight group to close
 
 		ft.Add(1 * time.Second)
 		assertCacheGet(t, c, ctx, "hello", 1)
 
-		time.Sleep(25 * time.Millisecond) // wait for the singleflight group do close
+		time.Sleep(25 * time.Millisecond) // wait for the singleflight group to close
 
 		ft.Add(2 * time.Second)
 		assertCacheMiss(t, c, ctx, "hello")
+
+		if want, got := uint64(2), atomic.LoadUint64(&lookups); want != got {
+			t.Errorf("failed to assert number of lookups: want %d, got %d", want, got)
+		}
 
 		if want, got := uint64(0), atomic.LoadUint64(&stats.sets); want != got {
 			t.Errorf("failed to assert number of cache updates: want %d, got %d", want, got)
