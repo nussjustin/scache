@@ -53,11 +53,11 @@ func assertError(tb testing.TB, err error, want string) {
 type fakeTime time.Duration
 
 func (ft *fakeTime) Add(d time.Duration) {
-	*ft += fakeTime(d)
+	atomic.AddInt64((*int64)(ft), int64(d))
 }
 
 func (ft *fakeTime) NowFunc() time.Time {
-	return time.Unix(0, int64(*ft))
+	return time.Unix(0, atomic.LoadInt64((*int64)(ft)))
 }
 
 type mapCache map[string]interface{}
@@ -392,10 +392,10 @@ func TestLookupCache(t *testing.T) {
 			lookup.WithRefreshAfter(1*time.Second))
 
 		assertCacheGet(t, c, ctx, "hello", 1)
-		assertCacheGet(t, lru, ctx, "hello", 1)
+		assertCacheGetWithWait(t, lru, ctx, "hello", 1)
 		ft.Add(1 * time.Second)
 		assertCacheGet(t, c, ctx, "hello", 2)
-		assertCacheGet(t, lru, ctx, "hello", 2)
+		assertCacheGetWithWait(t, lru, ctx, "hello", 2)
 	})
 
 	t.Run("Refresh Error", func(t *testing.T) {
