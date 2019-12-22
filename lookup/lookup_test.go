@@ -293,14 +293,23 @@ func TestLookupCache(t *testing.T) {
 		assertCacheGet(t, c, ctx, "hello", "world")
 
 		// wait for async goroutine that would set the value
-		time.Sleep(250 * time.Millisecond)
-
-		if want, got := uint64(1), atomic.LoadUint64(&stats.gets); want != got {
-			t.Errorf("failed to assert get calls: want %d, got %d", want, got)
-		}
-
-		if want, got := uint64(0), atomic.LoadUint64(&stats.sets); want != got {
-			t.Errorf("failed to assert set calls: want %d, got %d", want, got)
+		tries := 10
+		for tries > 0 {
+			wantGets, gotGets := uint64(1), atomic.LoadUint64(&stats.gets)
+			wantSets, gotSets := uint64(0), atomic.LoadUint64(&stats.sets)
+			if wantGets == gotGets && wantSets == gotSets {
+				break
+			}
+			tries--
+			if tries == 0 {
+				if wantGets != gotGets {
+					t.Errorf("failed to assert get calls: want %d, got %d", wantGets, gotGets)
+				}
+				if wantSets != gotSets {
+					t.Errorf("failed to assert set calls: want %d, got %d", wantSets, gotSets)
+				}
+			}
+			time.Sleep(25*time.Millisecond)
 		}
 	})
 
