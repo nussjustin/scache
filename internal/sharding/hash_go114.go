@@ -17,6 +17,6 @@ func NewHasher() Hasher {
 func (h Hasher) Hash(s string) uint64 {
 	var sh maphash.Hash
 	sh.SetSeed(h.seed)
-	sh.WriteString(s)
+	_, _ = sh.WriteString(s)
 	return sh.Sum64()
 }
