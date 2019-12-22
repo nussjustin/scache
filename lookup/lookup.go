@@ -222,7 +222,7 @@ func (l *sfGroupEntry) lookup(shard *sfGroup, key string) {
 		return
 	}
 
-	l.miss = !l.ok
+	l.miss = true
 
 	if val, err := l.lc.f(ctx, key); err == nil {
 		l.val, l.age, l.ok = val, 0, true
