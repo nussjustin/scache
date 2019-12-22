@@ -40,14 +40,6 @@ func assertCacheMiss(tb testing.TB, c getter, ctx context.Context, key string) {
 	}
 }
 
-func assertCacheSet(tb testing.TB, c scache.Cache, ctx context.Context, key string, val interface{}) {
-	tb.Helper()
-
-	if err := c.Set(ctx, key, val); err != nil {
-		tb.Fatalf("failed to set key %q to value %q: %s", key, val, err)
-	}
-}
-
 func assertError(tb testing.TB, err error, want string) {
 	tb.Helper()
 
