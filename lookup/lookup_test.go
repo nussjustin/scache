@@ -421,8 +421,14 @@ func TestLookupCache(t *testing.T) {
 		}
 
 		assertCacheGet(t, c, ctx, "hello", 1)
+
+		time.Sleep(25 * time.Millisecond) // wait for the singleflight group do close
+
 		ft.Add(1 * time.Second)
 		assertCacheGet(t, c, ctx, "hello", 1)
+
+		time.Sleep(25 * time.Millisecond) // wait for the singleflight group do close
+
 		ft.Add(2 * time.Second)
 		assertCacheMiss(t, c, ctx, "hello")
 
