@@ -73,7 +73,7 @@ func (m mapCache) Set(_ context.Context, key string, val interface{}) error {
 }
 
 type statsCache struct {
-	c scache.Cache
+	c          scache.Cache
 	gets, sets uint64
 }
 
@@ -309,7 +309,7 @@ func TestLookupCache(t *testing.T) {
 					t.Errorf("failed to assert set calls: want %d, got %d", wantSets, gotSets)
 				}
 			}
-			time.Sleep(25*time.Millisecond)
+			time.Sleep(25 * time.Millisecond)
 		}
 	})
 
@@ -372,7 +372,7 @@ func TestLookupCache(t *testing.T) {
 			lookup.WithRefreshAfter(1*time.Second))
 
 		assertCacheGet(t, c, ctx, "hello", 1)
-		ft.Add(1*time.Second)
+		ft.Add(1 * time.Second)
 		assertCacheGet(t, c, ctx, "hello", 2)
 	})
 
@@ -397,9 +397,9 @@ func TestLookupCache(t *testing.T) {
 		}
 
 		assertCacheGet(t, c, ctx, "hello", 1)
-		ft.Add(1*time.Second)
+		ft.Add(1 * time.Second)
 		assertCacheGet(t, c, ctx, "hello", 1)
-		ft.Add(2*time.Second)
+		ft.Add(2 * time.Second)
 		assertCacheMiss(t, c, ctx, "hello")
 	})
 
