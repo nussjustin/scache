@@ -34,6 +34,39 @@ type Func func(ctx context.Context, key string) (val interface{}, err error)
 // Opt is the type for functions that can be used to customize a Cache.
 type Opt func(*lookupOpts)
 
+// Stats contains statistics about a Cache.
+type Stats struct {
+	// InFlight is the number of currently running lookups including those
+	// that are waiting for calls on the underlying Cache.
+	InFlight uint64
+
+	// Errors is the total number of panics that were recovered since creating the Cache.
+	Errors uint64
+
+	// Hits is the total number of cache hits since creating the Cache.
+	Hits uint64
+
+	// Misses is the total number of cache misses since creating the Cache.
+	Misses uint64
+
+	// Panics is the total number of panics that were recovered since creating the Cache.
+	Panics uint64
+
+	// Refreshes is the total number of refreshes since creating the Cache.
+	Refreshes uint64
+}
+
+func (s Stats) add(so Stats) Stats {
+	return Stats{
+		Errors:    s.Errors + so.Errors,
+		Hits:      s.Hits + so.Hits,
+		InFlight:  s.InFlight + so.InFlight,
+		Misses:    s.Misses + so.Misses,
+		Panics:    s.Panics + so.Panics,
+		Refreshes: s.Refreshes + so.Refreshes,
+	}
+}
+
 type lookupOpts struct {
 	cacheNil bool
 
@@ -115,6 +148,7 @@ func WithTimeout(d time.Duration) Opt {
 type sfGroup struct {
 	mu     sync.Mutex
 	groups map[string]*sfGroupEntry
+	stats  Stats
 }
 
 type sfGroupEntry struct {
@@ -150,7 +184,7 @@ func NewCache(c scache.Cache, f Func, opts ...Opt) *Cache {
 		opt(&lopts)
 	}
 
-	ss := make([]sfGroup, 128) // TODO(nussjustin): Make configurable?
+	ss := make([]sfGroup, 1) // TODO(nussjustin): Make configurable?
 	for i := range ss {
 		ss[i].groups = make(map[string]*sfGroupEntry)
 	}
@@ -192,24 +226,48 @@ func (l *Cache) Get(ctx context.Context, key string) (val interface{}, age time.
 	return g.wait(ctx)
 }
 
-func (l *Cache) set(key string, val interface{}) {
+func (l *Cache) set(stats *Stats, key string, val interface{}) {
 	defer func() {
-		if v := recover(); v != nil && l.panicFn != nil {
-			l.panicFn(key, v)
+		if v := recover(); v != nil {
+			stats.Panics++
+			if l.panicFn != nil {
+				l.panicFn(key, v)
+			}
 		}
 	}()
 
 	setCtx, cancel := context.WithTimeout(context.Background(), l.setTimeout)
 	defer cancel()
 
-	if err := l.c.Set(setCtx, key, val); err != nil && l.setErrFn != nil {
-		l.setErrFn(key, err)
+	if err := l.c.Set(setCtx, key, val); err != nil {
+		stats.Errors++
+		if l.setErrFn != nil {
+			l.setErrFn(key, err)
+		}
 	}
 }
 
+// Stats returns statistics about the Cache.
+func (l *Cache) Stats() Stats {
+	var stats Stats
+	for i := range l.shards {
+		s := &l.shards[i]
+		s.mu.Lock()
+
+		stats = stats.add(s.stats)
+		stats.InFlight += uint64(len(s.groups))
+
+		s.mu.Unlock()
+	}
+	return stats
+}
+
 func (l *sfGroupEntry) lookup(shard *sfGroup, key string) {
+	var lookupStats Stats
+
 	defer func() {
 		if v := recover(); v != nil {
+			lookupStats.Panics++
 			if l.lc.panicFn != nil {
 				l.lc.panicFn(key, v)
 			}
@@ -218,34 +276,46 @@ func (l *sfGroupEntry) lookup(shard *sfGroup, key string) {
 		close(l.done)
 
 		if l.fresh && l.ok && (l.val != nil || l.lc.cacheNil) {
-			l.lc.set(key, l.val)
+			l.lc.set(&lookupStats, key, l.val)
 		}
 
 		shard.mu.Lock()
 		delete(shard.groups, key)
+		shard.stats = shard.stats.add(lookupStats)
 		shard.mu.Unlock()
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), l.lc.lookupTimeout)
 	defer cancel()
 
-	if val, age, ok := l.lc.c.Get(ctx, key); ok {
+	val, age, ok := l.lc.c.Get(ctx, key)
+
+	switch {
+	case ok:
+		lookupStats.Hits++
 		l.val, l.age, l.ok = val, age, ok
 		if l.lc.refreshAfter <= 0 || l.lc.refreshAfter > l.age {
 			return
 		}
-	} else if ctx.Err() != nil {
+		lookupStats.Refreshes++
+	case ctx.Err() != nil:
+		lookupStats.Errors++
 		if l.lc.lookupErrFn != nil {
 			l.lc.lookupErrFn(key, ctx.Err())
 		}
 		return
+	default:
+		lookupStats.Misses++
 	}
 
 	if val, err := l.lc.f(ctx, key); err == nil {
 		l.fresh = true
 		l.val, l.age, l.ok = val, 0, true
-	} else if l.lc.lookupErrFn != nil {
-		l.lc.lookupErrFn(key, err)
+	} else {
+		lookupStats.Errors++
+		if l.lc.lookupErrFn != nil {
+			l.lc.lookupErrFn(key, err)
+		}
 	}
 }
 
