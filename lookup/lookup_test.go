@@ -50,6 +50,16 @@ func assertError(tb testing.TB, err error, want string) {
 	}
 }
 
+type fakeTime time.Duration
+
+func (ft *fakeTime) Add(d time.Duration) {
+	*ft += fakeTime(d)
+}
+
+func (ft *fakeTime) NowFunc() time.Time {
+	return time.Unix(0, int64(*ft))
+}
+
 type mapCache map[string]interface{}
 
 func (m mapCache) Get(ctx context.Context, key string) (val interface{}, age time.Duration, ok bool) {
@@ -332,6 +342,56 @@ func TestLookupCache(t *testing.T) {
 
 		c = lookup.NewCache(lru, lookupFunc, lookup.WithPanicHandler(nil))
 		assertCacheMiss(t, c, ctx, "Hello") // check that the panic is still handled
+	})
+
+	t.Run("Refresh", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		var ft fakeTime
+
+		lru := scache.NewLRU(4)
+		lru.NowFunc = ft.NowFunc
+
+		var lookups uint64
+
+		c := lookup.NewCache(
+			lru,
+			func(_ context.Context, key string) (val interface{}, err error) {
+				return int(atomic.AddUint64(&lookups, 1)), nil
+			},
+			lookup.WithRefreshAfter(1*time.Second))
+
+		assertCacheGet(t, c, ctx, "hello", 1)
+		ft.Add(1*time.Second)
+		assertCacheGet(t, c, ctx, "hello", 2)
+	})
+
+	t.Run("Refresh Error", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		var ft fakeTime
+
+		lru := scache.NewLRUWithTTL(4, 2*time.Second)
+		lru.NowFunc = ft.NowFunc
+
+		c := lookup.NewCache(
+			lru,
+			func(_ context.Context, key string) (val interface{}, err error) {
+				return nil, errors.New("some error")
+			},
+			lookup.WithRefreshAfter(1*time.Second))
+
+		if err := lru.Set(ctx, "hello", 1); err != nil {
+			t.Fatalf("failed to add value to cache: %s", err)
+		}
+
+		assertCacheGet(t, c, ctx, "hello", 1)
+		ft.Add(1*time.Second)
+		assertCacheGet(t, c, ctx, "hello", 1)
+		ft.Add(2*time.Second)
+		assertCacheMiss(t, c, ctx, "hello")
 	})
 
 	t.Run("Set Timeout", func(t *testing.T) {

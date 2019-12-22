@@ -10,7 +10,7 @@ import (
 )
 
 // Cache implements a cache wrapper where on each cache miss the value will be looked
-// up via a cache-global lookup function and cached in the underlying cache for further calls.
+// up via a cache-level lookup function and cached in the underlying cache for further calls.
 //
 // Cache explicitly does not implement the Cache interface.
 type Cache struct {
@@ -35,6 +35,8 @@ type lookupOpts struct {
 
 	panicFn func(key string, v interface{})
 
+	refreshAfter time.Duration
+
 	setErrFn   func(key string, err error)
 	setTimeout time.Duration
 }
@@ -56,6 +58,19 @@ func WithErrorHandler(f func(key string, err error)) Opt {
 func WithPanicHandler(f func(key string, v interface{})) Opt {
 	return func(opts *lookupOpts) {
 		opts.panicFn = f
+	}
+}
+
+// WithRefreshAfter specifies the duration after which values in the cache will be treated
+// as missing and refreshed.
+//
+// If a refresh fails the Cache will keep serving the old value and retry the refresh the
+// next time the underlying cache is checked.
+//
+// If d is <= 0, values will never be treated as missing based on their age.
+func WithRefreshAfter(d time.Duration) Opt {
+	return func(opts *lookupOpts) {
+		opts.refreshAfter = d
 	}
 }
 
@@ -134,8 +149,11 @@ func NewCache(c scache.Cache, f Func, opts ...Opt) *Cache {
 
 // Get returns the value for the given key.
 //
-// If the key is not found in the underlying Cache it will be looked up using the lookup
-// function specified in NewCache.
+// If the key is not found in the underlying Cache or the cached value is stale (its age is greater
+// than the refresh duration, see WithRefreshAfter) it will be looked up using the lookup function
+// specified in NewCache.
+//
+// When the lookup of a stale value fails, Get will continue to return the old value.
 func (l *Cache) Get(ctx context.Context, key string) (val interface{}, age time.Duration, ok bool) {
 	idx := int(l.hasher.Hash(key) % uint64(len(l.shards)))
 
@@ -173,8 +191,6 @@ func (l *Cache) set(key string, val interface{}) {
 func (l *sfGroupEntry) lookup(shard *sfGroup, key string) {
 	defer func() {
 		if v := recover(); v != nil {
-			l.val, l.ok = nil, false
-
 			if l.lc.panicFn != nil {
 				l.lc.panicFn(key, v)
 			}
@@ -196,7 +212,9 @@ func (l *sfGroupEntry) lookup(shard *sfGroup, key string) {
 
 	if val, age, ok := l.lc.c.Get(ctx, key); ok {
 		l.val, l.age, l.ok = val, age, ok
-		return
+		if l.lc.refreshAfter <= 0 || l.lc.refreshAfter > l.age {
+			return
+		}
 	} else if ctx.Err() != nil {
 		if l.lc.lookupErrFn != nil {
 			l.lc.lookupErrFn(key, ctx.Err())
@@ -204,7 +222,7 @@ func (l *sfGroupEntry) lookup(shard *sfGroup, key string) {
 		return
 	}
 
-	l.miss = true
+	l.miss = !l.ok
 
 	if val, err := l.lc.f(ctx, key); err == nil {
 		l.val, l.age, l.ok = val, 0, true
