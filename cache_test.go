@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/nussjustin/scache"
 )
@@ -14,7 +15,7 @@ import (
 func assertCacheGet(tb testing.TB, c scache.Cache, ctx context.Context, key string, want interface{}) {
 	tb.Helper()
 
-	got, ok := c.Get(ctx, key)
+	got, _, ok := c.Get(ctx, key)
 	if !ok {
 		tb.Fatalf("failed to get key %q", key)
 	}
@@ -24,10 +25,27 @@ func assertCacheGet(tb testing.TB, c scache.Cache, ctx context.Context, key stri
 	}
 }
 
+func assertCacheGetWithAge(tb testing.TB, c scache.Cache, ctx context.Context, key string, want interface{}, wantAge time.Duration) {
+	tb.Helper()
+
+	got, gotAge, ok := c.Get(ctx, key)
+	if !ok {
+		tb.Fatalf("failed to get key %q", key)
+	}
+
+	if !reflect.DeepEqual(want, got) {
+		tb.Fatalf("failed to assert value: want %v got %v", want, got)
+	}
+
+	if wantAge != gotAge {
+		tb.Fatalf("failed to assert gotAge: want at least %s got %s", wantAge, gotAge)
+	}
+}
+
 func assertCacheMiss(tb testing.TB, c scache.Cache, ctx context.Context, key string) {
 	tb.Helper()
 
-	if val, ok := c.Get(ctx, key); ok {
+	if val, _, ok := c.Get(ctx, key); ok {
 		tb.Fatalf("failed to assert cache miss: got value %v", val)
 	}
 }
@@ -56,6 +74,16 @@ func assertNoError(tb testing.TB, err error) {
 	if err != nil {
 		tb.Fatalf("failed to assert no error: got %v", err)
 	}
+}
+
+type fakeTime time.Duration
+
+func (ft *fakeTime) Add(d time.Duration) {
+	*ft += fakeTime(d)
+}
+
+func (ft *fakeTime) NowFunc() time.Time {
+	return time.Unix(0, int64(*ft))
 }
 
 func TestLockedCache(t *testing.T) {

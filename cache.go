@@ -3,6 +3,7 @@ package scache
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/nussjustin/scache/internal/sharding"
 )
@@ -10,16 +11,21 @@ import (
 // Cache defines methods for setting and retrieving values in a Cache
 type Cache interface {
 	// Get retrieves the cached value for the given key.
-	Get(ctx context.Context, key string) (val interface{}, ok bool)
+	//
+	// The age return value contains the duration for which the value is in the cache.
+	Get(ctx context.Context, key string) (val interface{}, age time.Duration, ok bool)
 
 	// Set adds the given value to the cache.
 	//
 	// If there is already a value with the same key in the Cache, it will be removed.
+	//
+	// The fresh parameter specifies for how long the value should be treated as fresh.
+	// A negative value indicates that the value should always be treated as fresh.
 	Set(ctx context.Context, key string, val interface{}) error
 }
 
-// ShardedCache implements a Cache that partitions entries into multuple underlying Cache
-// instances for reduced locking and increased scalability.
+// ShardedCache implements a Cache that partitions entries into multiple underlying Cache
+// instances to reduce contention on each Cache instance and increase scalability.
 type ShardedCache struct {
 	hasher sharding.Hasher
 	shards []Cache
@@ -56,7 +62,7 @@ func NewShardedCache(shards int, factory func(shard int) Cache) (*ShardedCache, 
 //
 //     s.Shard(key).Get(ctx, key)
 //
-func (s *ShardedCache) Get(ctx context.Context, key string) (val interface{}, ok bool) {
+func (s *ShardedCache) Get(ctx context.Context, key string) (val interface{}, age time.Duration, ok bool) {
 	return s.Shard(key).Get(ctx, key)
 }
 

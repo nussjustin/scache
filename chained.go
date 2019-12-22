@@ -2,6 +2,7 @@ package scache
 
 import (
 	"context"
+	"time"
 )
 
 type chainedCache struct {
@@ -19,14 +20,14 @@ func NewChainedCache(cs ...Cache) Cache {
 }
 
 // Get implements the Cache interface.
-func (cc *chainedCache) Get(ctx context.Context, key string) (val interface{}, ok bool) {
+func (cc *chainedCache) Get(ctx context.Context, key string) (val interface{}, age time.Duration, ok bool) {
 	for _, c := range cc.cs {
-		val, ok = c.Get(ctx, key)
+		val, age, ok = c.Get(ctx, key)
 		if ok {
 			return
 		}
 	}
-	return nil, false
+	return nil, 0, false
 }
 
 func (cc *chainedCache) Set(ctx context.Context, key string, val interface{}) error {

@@ -93,6 +93,7 @@ type sfGroupEntry struct {
 	done chan struct{}
 
 	val      interface{}
+	age      time.Duration
 	miss, ok bool
 }
 
@@ -135,7 +136,7 @@ func NewCache(c scache.Cache, f Func, opts ...Opt) *Cache {
 //
 // If the key is not found in the underlying Cache it will be looked up using the lookup
 // function specified in NewCache.
-func (l *Cache) Get(ctx context.Context, key string) (val interface{}, ok bool) {
+func (l *Cache) Get(ctx context.Context, key string) (val interface{}, age time.Duration, ok bool) {
 	idx := int(l.hasher.Hash(key) % uint64(len(l.shards)))
 
 	s := &l.shards[idx]
@@ -193,8 +194,8 @@ func (l *sfGroupEntry) lookup(shard *sfGroup, key string) {
 	ctx, cancel := context.WithTimeout(context.Background(), l.lc.lookupTimeout)
 	defer cancel()
 
-	if val, ok := l.lc.c.Get(ctx, key); ok {
-		l.val, l.ok = val, ok
+	if val, age, ok := l.lc.c.Get(ctx, key); ok {
+		l.val, l.age, l.ok = val, age, ok
 		return
 	} else if ctx.Err() != nil {
 		if l.lc.lookupErrFn != nil {
@@ -206,17 +207,17 @@ func (l *sfGroupEntry) lookup(shard *sfGroup, key string) {
 	l.miss = true
 
 	if val, err := l.lc.f(ctx, key); err == nil {
-		l.val, l.ok = val, true
+		l.val, l.age, l.ok = val, 0, true
 	} else if l.lc.lookupErrFn != nil {
 		l.lc.lookupErrFn(key, err)
 	}
 }
 
-func (l *sfGroupEntry) wait(ctx context.Context) (val interface{}, ok bool) {
+func (l *sfGroupEntry) wait(ctx context.Context) (val interface{}, age time.Duration, ok bool) {
 	select {
 	case <-ctx.Done():
-		return nil, false
+		return nil, 0, false
 	case <-l.done:
-		return l.val, l.ok
+		return l.val, l.age, l.ok
 	}
 }

@@ -3,6 +3,7 @@ package scache_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/nussjustin/scache"
 )
@@ -10,11 +11,11 @@ import (
 type contextCacheCache struct {
 }
 
-func (c contextCacheCache) Get(ctx context.Context, key string) (val interface{}, ok bool) {
+func (c contextCacheCache) Get(context.Context, string) (val interface{}, age time.Duration, ok bool) {
 	return
 }
 
-func (c contextCacheCache) Set(ctx context.Context, key string, val interface{}) error {
+func (c contextCacheCache) Set(ctx context.Context, _ string, _ interface{}) error {
 	return ctx.Err()
 }
 
@@ -33,17 +34,23 @@ func TestChainedCache(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
+		var ft fakeTime
+
 		c1, c2, c3 := scache.NewLRU(4), scache.NewLRU(4), scache.NewLRU(4)
+		c1.NowFunc, c2.NowFunc, c3.NowFunc = ft.NowFunc, ft.NowFunc, ft.NowFunc
 
 		assertCacheSet(t, c1, ctx, "key1", "val1")
+		ft.Add(5 * time.Millisecond)
 		assertCacheSet(t, c2, ctx, "key2", "val2")
+		ft.Add(5 * time.Millisecond)
 		assertCacheSet(t, c3, ctx, "key3", "val3")
+		ft.Add(5 * time.Millisecond)
 
 		cc := scache.NewChainedCache(c1, c2, c3)
 
-		assertCacheGet(t, cc, ctx, "key1", "val1")
-		assertCacheGet(t, cc, ctx, "key2", "val2")
-		assertCacheGet(t, cc, ctx, "key3", "val3")
+		assertCacheGetWithAge(t, cc, ctx, "key1", "val1", 15*time.Millisecond)
+		assertCacheGetWithAge(t, cc, ctx, "key2", "val2", 10*time.Millisecond)
+		assertCacheGetWithAge(t, cc, ctx, "key3", "val3", 5*time.Millisecond)
 
 		assertCacheSet(t, cc, ctx, "key4", "val4")
 

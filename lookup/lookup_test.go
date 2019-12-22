@@ -16,13 +16,13 @@ import (
 )
 
 type getter interface {
-	Get(ctx context.Context, key string) (val interface{}, ok bool)
+	Get(ctx context.Context, key string) (val interface{}, age time.Duration, ok bool)
 }
 
 func assertCacheGet(tb testing.TB, c getter, ctx context.Context, key string, want interface{}) {
 	tb.Helper()
 
-	got, ok := c.Get(ctx, key)
+	got, _, ok := c.Get(ctx, key)
 	if !ok {
 		tb.Fatalf("failed to get key %q", key)
 	}
@@ -35,7 +35,7 @@ func assertCacheGet(tb testing.TB, c getter, ctx context.Context, key string, wa
 func assertCacheMiss(tb testing.TB, c getter, ctx context.Context, key string) {
 	tb.Helper()
 
-	if val, ok := c.Get(ctx, key); ok {
+	if val, _, ok := c.Get(ctx, key); ok {
 		tb.Fatalf("failed to assert cache miss: got value %v", val)
 	}
 }
@@ -60,7 +60,7 @@ func assertError(tb testing.TB, err error, want string) {
 
 type mapCache map[string]interface{}
 
-func (m mapCache) Get(ctx context.Context, key string) (val interface{}, ok bool) {
+func (m mapCache) Get(ctx context.Context, key string) (val interface{}, age time.Duration, ok bool) {
 	val, ok = m[key]
 	return
 }
@@ -72,7 +72,7 @@ func (m mapCache) Set(ctx context.Context, key string, val interface{}) error {
 
 type noopCache struct{}
 
-func (n noopCache) Get(ctx context.Context, key string) (val interface{}, ok bool) {
+func (n noopCache) Get(ctx context.Context, key string) (val interface{}, age time.Duration, ok bool) {
 	return
 }
 
@@ -85,7 +85,7 @@ type statsCache struct {
 	gets, sets uint64
 }
 
-func (s *statsCache) Get(ctx context.Context, key string) (val interface{}, ok bool) {
+func (s *statsCache) Get(ctx context.Context, key string) (val interface{}, age time.Duration, ok bool) {
 	atomic.AddUint64(&s.gets, 1)
 	return s.c.Get(ctx, key)
 }
@@ -101,17 +101,17 @@ type slowCache struct {
 	setDelay time.Duration
 }
 
-func (s *slowCache) Get(ctx context.Context, key string) (val interface{}, ok bool) {
+func (s *slowCache) Get(ctx context.Context, key string) (val interface{}, age time.Duration, ok bool) {
 	t := time.NewTimer(s.getDelay)
 	defer t.Stop()
 	select {
 	case <-ctx.Done():
-		return nil, false
+		return nil, -1, false
 	case <-t.C:
 		if s.c != nil {
 			return s.c.Get(ctx, key)
 		}
-		return nil, true
+		return nil, -1, true
 	}
 }
 
@@ -136,7 +136,7 @@ func assertCacheGetWithWait(tb testing.TB, c getter, ctx context.Context, key st
 	var ok bool
 
 	for i := 1; i <= 4; i++ {
-		if got, ok = c.Get(ctx, key); !ok {
+		if got, _, ok = c.Get(ctx, key); !ok {
 			time.Sleep(time.Duration(i) * 10 * time.Millisecond)
 		}
 	}
@@ -461,7 +461,7 @@ func TestLookupCacheConcurrency(t *testing.T) {
 				wg.Add(1)
 				go func(key string) {
 					defer wg.Done()
-					_, _ = c.Get(ctx, key)
+					_, _, _ = c.Get(ctx, key)
 				}(key)
 			}
 		}
@@ -498,7 +498,7 @@ func BenchmarkLookup(b *testing.B) {
 		})
 
 		for i := 0; i < b.N; i++ {
-			benchVal, benchOk = c.Get(context.Background(), "hit")
+			benchVal, _, benchOk = c.Get(context.Background(), "hit")
 		}
 	})
 
@@ -508,7 +508,7 @@ func BenchmarkLookup(b *testing.B) {
 		})
 
 		for i := 0; i < b.N; i++ {
-			benchVal, benchOk = c.Get(context.Background(), "miss")
+			benchVal, _, benchOk = c.Get(context.Background(), "miss")
 		}
 	})
 }

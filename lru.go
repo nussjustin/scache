@@ -7,8 +7,12 @@ import (
 )
 
 type LRU struct {
-	size int
-	ttl  time.Duration
+	// NowFunc if set will be called instead of time.Now when determining the current time
+	// for age and expiry checks.
+	NowFunc func() time.Time
+
+	cap int
+	ttl time.Duration
 
 	mu         sync.Mutex
 	entries    map[string]*lruItem
@@ -19,12 +23,14 @@ type LRU struct {
 type lruItem struct {
 	prev, next *lruItem
 
-	key      string
-	val      interface{}
-	expireAt time.Time
+	key string
+	val interface{}
+
+	added time.Time
+	ttl   time.Duration
 }
 
-// NewLRU returns a new fixed-size, in-memory Cache implementation that can hold size items.
+// NewLRU returns a new fixed-cap, in-memory Cache implementation that can hold cap items.
 //
 // Once the cache is full, adding new items will cause the least recently used items to be
 // evicted from the cache.
@@ -41,18 +47,18 @@ func NewLRU(size int) *LRU {
 func NewLRUWithTTL(size int, ttl time.Duration) *LRU {
 	return &LRU{
 		entries: make(map[string]*lruItem),
-		size:    size,
+		cap:     size,
 		ttl:     ttl,
 	}
 }
 
-func (l *LRU) addLocked(key string, val interface{}, expireAt time.Time) {
+func (l *LRU) addLocked(key string, val interface{}, added time.Time) {
 	var item *lruItem
 	if l.free != nil {
 		item, l.free = l.free, nil
-		item.key, item.val, item.expireAt = key, val, expireAt
+		item.key, item.val, item.added, item.ttl = key, val, added, l.ttl
 	} else {
-		item = &lruItem{key: key, val: val, expireAt: expireAt}
+		item = &lruItem{key: key, val: val, added: added, ttl: l.ttl}
 	}
 
 	item.next = l.head
@@ -102,15 +108,21 @@ func (l *LRU) unmountLocked(item *lruItem) {
 	item.next, item.prev = nil, nil
 }
 
+// Cap returns the maximum number of items that can be cached.
+func (l *LRU) Cap() int {
+	return l.cap
+}
+
 // Get implements the Cache interface.
-func (l *LRU) Get(ctx context.Context, key string) (val interface{}, ok bool) {
+func (l *LRU) Get(ctx context.Context, key string) (val interface{}, age time.Duration, ok bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	if item := l.entries[key]; item != nil {
-		if item.expireAt.IsZero() || time.Until(item.expireAt) > 0 {
+		age = l.since(item.added)
+		if item.ttl <= 0 || item.ttl > age {
 			l.moveToFrontLocked(item)
-			return item.val, true
+			return item.val, age, true
 		}
 		l.deleteLocked(item)
 	}
@@ -125,30 +137,51 @@ func (l *LRU) Len() int {
 	return len(l.entries)
 }
 
-// Set implements the Cache interface.
-func (l *LRU) Set(ctx context.Context, key string, val interface{}) error {
+// Remove removes a given key from the cache and returns the old value if the cache contained the key.
+func (l *LRU) Remove(ctx context.Context, key string) (val interface{}, age time.Duration, ok bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	var expireAt time.Time
-	if l.ttl > 0 {
-		expireAt = time.Now().Add(l.ttl)
+	if item := l.entries[key]; item != nil {
+		age = l.since(item.added)
+		if item.ttl <= 0 || item.ttl > age {
+			val, ok = item.val, true
+		}
+		l.deleteLocked(item)
+	}
+	return
+}
+
+// Set implements the Cache interface.
+func (l *LRU) Set(ctx context.Context, key string, val interface{}) error {
+	var now time.Time
+	if l.NowFunc != nil {
+		now = l.NowFunc()
+	} else {
+		now = time.Now()
 	}
 
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
 	if item := l.entries[key]; item != nil {
-		item.expireAt = expireAt
+		item.added = now
 		item.val = val
 		l.moveToFrontLocked(item)
 		return nil
 	}
-	if len(l.entries) >= l.size {
+	if len(l.entries) >= l.cap {
 		l.deleteLocked(l.tail)
 	}
-	l.addLocked(key, val, expireAt)
+	l.addLocked(key, val, now)
 	return nil
 }
 
-// Size returns the maximum number of items that can be cached.
-func (l *LRU) Size() int {
-	return l.size
+func (l *LRU) since(t time.Time) time.Duration {
+	// if we are using time.Now for getting the current time, we can avoid some overhead by calling
+	// time.Since directly instead of going through l.NowFunc() and calling .Sub()
+	if l.NowFunc == nil {
+		return time.Since(t)
+	}
+	return l.NowFunc().Sub(t)
 }
