@@ -57,18 +57,8 @@ func (m mapCache) Get(ctx context.Context, key string) (val interface{}, age tim
 	return
 }
 
-func (m mapCache) Set(ctx context.Context, key string, val interface{}) error {
+func (m mapCache) Set(_ context.Context, key string, val interface{}) error {
 	m[key] = val
-	return nil
-}
-
-type noopCache struct{}
-
-func (n noopCache) Get(ctx context.Context, key string) (val interface{}, age time.Duration, ok bool) {
-	return
-}
-
-func (n noopCache) Set(ctx context.Context, key string, val interface{}) error {
 	return nil
 }
 
@@ -476,31 +466,4 @@ func TestLookupCacheConcurrency(t *testing.T) {
 
 	checkKeys()
 	assertCalls(1)
-}
-
-var (
-	benchVal interface{}
-	benchOk bool
-)
-
-func BenchmarkLookup(b *testing.B) {
-	b.Run("Hit", func(b *testing.B) {
-		c := lookup.NewCache(mapCache{"hit": "hit"}, func(ctx context.Context, key string) (val interface{}, err error) {
-			return nil, nil
-		})
-
-		for i := 0; i < b.N; i++ {
-			benchVal, _, benchOk = c.Get(context.Background(), "hit")
-		}
-	})
-
-	b.Run("Miss", func(b *testing.B) {
-		c := lookup.NewCache(noopCache{}, func(ctx context.Context, key string) (val interface{}, err error) {
-			return nil, nil
-		})
-
-		for i := 0; i < b.N; i++ {
-			benchVal, _, benchOk = c.Get(context.Background(), "miss")
-		}
-	})
 }
