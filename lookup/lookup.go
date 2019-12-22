@@ -36,8 +36,7 @@ type Opt func(*lookupOpts)
 
 // Stats contains statistics about a Cache.
 type Stats struct {
-	// InFlight is the number of currently running lookups including those
-	// that are waiting for calls on the underlying Cache.
+	// InFlight is the number of currently running cache accesses and lookups.
 	InFlight uint64
 
 	// Errors is the total number of panics that were recovered since creating the Cache.
@@ -253,7 +252,8 @@ func (l *Cache) set(stats *Stats, key string, val interface{}) {
 	}
 }
 
-// Stats returns statistics about the Cache.
+// Stats returns statistics about all completed lookups and cache accesses
+// and the number of open (in-flight) lookups.
 func (l *Cache) Stats() Stats {
 	var stats Stats
 	for i := range l.shards {
