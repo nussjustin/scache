@@ -46,6 +46,11 @@ type Stats struct {
 	// Hits is the total number of cache hits since creating the Cache.
 	Hits uint64
 
+	// Lookups is the total number of lookups since creating the Cache.
+	//
+	// This is the same as Misses + Refreshes.
+	Lookups uint64
+
 	// Misses is the total number of cache misses since creating the Cache.
 	Misses uint64
 
@@ -61,6 +66,7 @@ func (s Stats) add(so Stats) Stats {
 		Errors:    s.Errors + so.Errors,
 		Hits:      s.Hits + so.Hits,
 		InFlight:  s.InFlight + so.InFlight,
+		Lookups:   s.Lookups + so.Lookups,
 		Misses:    s.Misses + so.Misses,
 		Panics:    s.Panics + so.Panics,
 		Refreshes: s.Refreshes + so.Refreshes,
@@ -307,6 +313,8 @@ func (l *sfGroupEntry) lookup(shard *sfGroup, key string) {
 	default:
 		lookupStats.Misses++
 	}
+
+	lookupStats.Lookups++
 
 	if val, err := l.lc.f(ctx, key); err == nil {
 		l.fresh = true

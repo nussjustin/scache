@@ -205,9 +205,10 @@ func TestLookupCache(t *testing.T) {
 
 			assertLookupError("HELLO", "wrong key: HELLO")
 			assertStats(t, c, lookup.Stats{
-				Hits:   1,
-				Errors: 2,
-				Misses: 3,
+				Hits:    1,
+				Errors:  2,
+				Lookups: 3,
+				Misses:  3,
 			})
 		}
 	})
@@ -283,7 +284,7 @@ func TestLookupCache(t *testing.T) {
 		lookupDelayMu.Unlock()
 
 		assertCacheMiss(t, c, ctx, "hello4")
-		assertStats(t, c, lookup.Stats{Errors: 1, Misses: 4})
+		assertStats(t, c, lookup.Stats{Errors: 1, Lookups: 4, Misses: 4})
 	})
 
 	t.Run("Nil", func(t *testing.T) {
@@ -300,7 +301,7 @@ func TestLookupCache(t *testing.T) {
 			c := lookup.NewCache(lru, lookupFunc)
 
 			assertCacheGet(t, c, ctx, "hello", nil)
-			assertStats(t, c, lookup.Stats{Misses: 1})
+			assertStats(t, c, lookup.Stats{Lookups: 1, Misses: 1})
 			assertCacheMiss(t, lru, ctx, "hello")
 		})
 
@@ -317,7 +318,7 @@ func TestLookupCache(t *testing.T) {
 			c := lookup.NewCache(lru, lookupFunc, lookup.WithCacheNil())
 
 			assertCacheGet(t, c, ctx, "hello", nil)
-			assertStats(t, c, lookup.Stats{Misses: 1})
+			assertStats(t, c, lookup.Stats{Lookups: 1, Misses: 1})
 			assertCacheGet(t, lru, ctx, "hello", nil)
 		})
 	})
@@ -370,11 +371,11 @@ func TestLookupCache(t *testing.T) {
 		c := lookup.NewCache(lru, lookupFunc, lookup.WithPanicHandler(onPanic))
 		assertCacheMiss(t, c, ctx, "Hello")
 		assertLookupPanic("Hello", "HELLO")
-		assertStats(t, c, lookup.Stats{Misses: 1, Panics: 1})
+		assertStats(t, c, lookup.Stats{Lookups: 1, Misses: 1, Panics: 1})
 
 		c = lookup.NewCache(lru, lookupFunc, lookup.WithPanicHandler(nil))
 		assertCacheMiss(t, c, ctx, "Hello") // check that the panic is still handled
-		assertStats(t, c, lookup.Stats{Misses: 1, Panics: 1})
+		assertStats(t, c, lookup.Stats{Lookups: 1, Misses: 1, Panics: 1})
 	})
 
 	t.Run("Refresh", func(t *testing.T) {
@@ -396,13 +397,13 @@ func TestLookupCache(t *testing.T) {
 			lookup.WithRefreshAfter(1*time.Second))
 
 		assertCacheGet(t, c, ctx, "hello", 1)
-		assertStats(t, c, lookup.Stats{Misses: 1, Hits: 0})
+		assertStats(t, c, lookup.Stats{Lookups: 1, Misses: 1, Hits: 0})
 		assertCacheGet(t, lru, ctx, "hello", 1)
 
 		ft.Add(1 * time.Second)
 
 		assertCacheGet(t, c, ctx, "hello", 2)
-		assertStats(t, c, lookup.Stats{Misses: 1, Hits: 1, Refreshes: 1})
+		assertStats(t, c, lookup.Stats{Lookups: 2, Misses: 1, Hits: 1, Refreshes: 1})
 		assertCacheGet(t, lru, ctx, "hello", 2)
 	})
 
@@ -444,6 +445,7 @@ func TestLookupCache(t *testing.T) {
 		assertStats(t, c, lookup.Stats{
 			Errors:    2,
 			Hits:      2,
+			Lookups:   2,
 			Misses:    1,
 			Refreshes: 1,
 		})
@@ -489,8 +491,9 @@ func TestLookupCache(t *testing.T) {
 		assertCacheGet(t, c, ctx, "hello", "HELLO")
 		assertSetError("hello", context.DeadlineExceeded.Error())
 		assertStats(t, c, lookup.Stats{
-			Errors: 1,
-			Misses: 1,
+			Errors:  1,
+			Lookups: 1,
+			Misses:  1,
 		})
 	})
 
@@ -509,7 +512,7 @@ func TestLookupCache(t *testing.T) {
 		assertCacheGet(t, c, ctx, "hello", "HELLO")
 		assertCacheGet(t, c, ctx, "HeLlO", "HELLO")
 		assertCacheGet(t, c, ctx, "HELLO", "HELLO")
-		assertStats(t, c, lookup.Stats{Misses: 3})
+		assertStats(t, c, lookup.Stats{Lookups: 3, Misses: 3})
 
 		assertCacheGet(t, lru, ctx, "hello", "HELLO")
 		assertCacheGet(t, lru, ctx, "HeLlO", "HELLO")
@@ -519,7 +522,7 @@ func TestLookupCache(t *testing.T) {
 		assertCacheGet(t, c, ctx, "HeLlO", "HELLO")
 		assertCacheGet(t, c, ctx, "HELLO", "HELLO")
 		assertCacheGet(t, c, ctx, "hELLo", "HELLO")
-		assertStats(t, c, lookup.Stats{Hits: 3, Misses: 4})
+		assertStats(t, c, lookup.Stats{Lookups: 4, Hits: 3, Misses: 4})
 
 		assertCacheGet(t, lru, ctx, "hELLo", "HELLO")
 	})
