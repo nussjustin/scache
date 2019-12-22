@@ -265,19 +265,39 @@ func TestLookupCache(t *testing.T) {
 	})
 
 	t.Run("Nil", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		t.Run("Default", func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-		lru := scache.NewLRU(4)
+			lru := scache.NewLRU(4)
 
-		lookupFunc := func(ctx context.Context, key string) (val interface{}, err error) {
-			return nil, nil
-		}
+			lookupFunc := func(ctx context.Context, key string) (val interface{}, err error) {
+				return nil, nil
+			}
 
-		c := lookup.NewCache(lru, lookupFunc)
+			c := lookup.NewCache(lru, lookupFunc)
 
-		assertCacheGet(t, c, ctx, "hello", nil)
-		assertCacheGetWithWait(t, lru, ctx, "hello", nil)
+			assertCacheGet(t, c, ctx, "hello", nil)
+			// give the cache time in case it tries to set the value
+			time.Sleep(100 * time.Millisecond)
+			assertCacheMiss(t, lru, ctx, "hello")
+		})
+
+		t.Run("WithCacheNil", func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			lru := scache.NewLRU(4)
+
+			lookupFunc := func(ctx context.Context, key string) (val interface{}, err error) {
+				return nil, nil
+			}
+
+			c := lookup.NewCache(lru, lookupFunc, lookup.WithCacheNil())
+
+			assertCacheGet(t, c, ctx, "hello", nil)
+			assertCacheGetWithWait(t, lru, ctx, "hello", nil)
+		})
 	})
 
 	t.Run("No Update on Hit", func(t *testing.T) {

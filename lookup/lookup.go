@@ -24,12 +24,19 @@ type Cache struct {
 }
 
 // Func defines a function for looking up values that will be placed in a Cache.
+//
+// If val is nil, by default the value will not be cached. See NewCache and WithCacheNil
+// for a way to cache nil values.
+//
+// Note: val is considered to be nil only if (val == nil) returns true.
 type Func func(ctx context.Context, key string) (val interface{}, err error)
 
 // Opt is the type for functions that can be used to customize a Cache.
 type Opt func(*lookupOpts)
 
 type lookupOpts struct {
+	cacheNil bool
+
 	lookupErrFn   func(key string, err error)
 	lookupTimeout time.Duration
 
@@ -39,6 +46,13 @@ type lookupOpts struct {
 
 	setErrFn   func(key string, err error)
 	setTimeout time.Duration
+}
+
+// WithCacheNil enables caching of nil values. By default nil is not cached.
+func WithCacheNil() Opt {
+	return func(opts *lookupOpts) {
+		opts.cacheNil = true
+	}
 }
 
 // WithErrorHandler can be used to set a handler function that is called when a Lookup
@@ -122,6 +136,9 @@ type sfGroupEntry struct {
 //     WithSetTimeout(250 * time.Millisecond)
 //     WithTimeout(250 * time.Millisecond)
 //
+// Note: By default nil values will not be cached. If you want to cache nil
+// values, you can pass WithCacheNil() to NewCache.
+//
 func NewCache(c scache.Cache, f Func, opts ...Opt) *Cache {
 	lopts := lookupOpts{
 		lookupTimeout: 250 * time.Millisecond,
@@ -198,7 +215,7 @@ func (l *sfGroupEntry) lookup(shard *sfGroup, key string) {
 
 		close(l.done)
 
-		if l.miss && l.ok {
+		if l.ok && l.miss && (l.val != nil || l.lc.cacheNil) {
 			l.lc.set(key, l.val)
 		}
 
