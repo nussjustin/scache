@@ -128,7 +128,7 @@ func assertCacheGetWithWait(tb testing.TB, c getter, ctx context.Context, key st
 	var ok bool
 
 	for i := 1; i <= 4; i++ {
-		if got, _, ok = c.Get(ctx, key); !ok {
+		if got, _, ok = c.Get(ctx, key); !ok || want != got {
 			time.Sleep(time.Duration(i) * 10 * time.Millisecond)
 		}
 	}
