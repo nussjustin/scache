@@ -407,8 +407,10 @@ func TestLookupCache(t *testing.T) {
 		lru := scache.NewLRUWithTTL(4, 2*time.Second)
 		lru.NowFunc = ft.NowFunc
 
+		stats := &statsCache{c: lru}
+
 		c := lookup.NewCache(
-			lru,
+			stats,
 			func(_ context.Context, key string) (val interface{}, err error) {
 				return nil, errors.New("some error")
 			},
@@ -423,6 +425,10 @@ func TestLookupCache(t *testing.T) {
 		assertCacheGet(t, c, ctx, "hello", 1)
 		ft.Add(2 * time.Second)
 		assertCacheMiss(t, c, ctx, "hello")
+
+		if want, got := uint64(0), atomic.LoadUint64(&stats.sets); want != got {
+			t.Errorf("failed to assert number of cache updates: want %d, got %d", want, got)
+		}
 	})
 
 	t.Run("Set Timeout", func(t *testing.T) {
