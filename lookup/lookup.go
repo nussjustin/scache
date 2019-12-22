@@ -189,7 +189,7 @@ func NewCache(c scache.Cache, f Func, opts ...Opt) *Cache {
 		opt(&lopts)
 	}
 
-	ss := make([]sfGroup, 1) // TODO(nussjustin): Make configurable?
+	ss := make([]sfGroup, 128) // TODO(nussjustin): Make configurable?
 	for i := range ss {
 		ss[i].groups = make(map[string]*sfGroupEntry)
 	}
