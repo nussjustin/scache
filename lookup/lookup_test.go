@@ -55,7 +55,7 @@ func assertStats(tb testing.TB, c *lookup.Cache, want lookup.Stats) {
 
 	var got lookup.Stats
 
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 50; i++ {
 		got = c.Stats()
 
 		if reflect.DeepEqual(want, got) {
@@ -72,7 +72,7 @@ func assertStats(tb testing.TB, c *lookup.Cache, want lookup.Stats) {
 }
 
 func waitForInFlight(tb testing.TB, c *lookup.Cache) {
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 50; i++ {
 		if c.Stats().InFlight == 0 {
 			break
 		}
