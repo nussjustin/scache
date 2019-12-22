@@ -277,7 +277,7 @@ func TestLookupCache(t *testing.T) {
 		c := lookup.NewCache(lru, lookupFunc)
 
 		assertCacheGet(t, c, ctx, "hello", nil)
-		assertCacheGetWithWait(t, c, ctx, "hello", nil)
+		assertCacheGetWithWait(t, lru, ctx, "hello", nil)
 	})
 
 	t.Run("No Update on Hit", func(t *testing.T) {
