@@ -86,8 +86,6 @@ func (l *LRU) moveToFrontLocked(item *lruItem) {
 	l.unmountLocked(item)
 	if l.head != nil {
 		item.next, l.head.prev = l.head, item
-	} else if l.tail == nil {
-		l.tail = l.head
 	}
 	l.head = item
 }
