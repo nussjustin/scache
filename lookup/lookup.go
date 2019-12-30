@@ -23,6 +23,118 @@ type Cache struct {
 	shards []sfGroup
 }
 
+// NewCache returns a new *Cache using c as the underlying Cache and f for
+// looking up missing values.
+//
+// The underlying Cache must be safe for concurrent use.
+//
+// An optional Opts value can be given to control the behaviour of the Cache.
+// Setting opts to nil is equivalent to passing a pointer to a zero Opts value.
+//
+// Any change to opts which after NewCache returns will be ignored.
+//
+// Note: By default nil values will not be cached. Caching of nil values can
+// be enabled by passing custom opts and setting CacheNil to true.
+func NewCache(c scache.Cache, f Func, opts *Opts) *Cache {
+	if opts == nil {
+		opts = &Opts{}
+	}
+
+	if opts.SetTimeout <= 0 {
+		opts.SetTimeout = 250 * time.Millisecond
+	}
+
+	if opts.Timeout <= 0 {
+		opts.Timeout = 250 * time.Millisecond
+	}
+
+	ss := make([]sfGroup, 128) // TODO(nussjustin): Make configurable?
+	for i := range ss {
+		ss[i].groups = make(map[string]*sfGroupEntry)
+	}
+
+	return &Cache{
+		opts: *opts,
+
+		c: c,
+		f: f,
+
+		hasher: sharding.NewHasher(),
+		shards: ss,
+	}
+}
+
+// Get returns the value for the given key.
+//
+// If the key is not found in the underlying Cache or the cached value is stale (its age is greater
+// than the refresh duration, see WithRefreshAfter) it will be looked up using the lookup function
+// specified in NewCache.
+//
+// When the lookup of a stale value fails, Get will continue to return the old value.
+func (l *Cache) Get(ctx context.Context, key string) (val interface{}, age time.Duration, ok bool) {
+	idx := int(l.hasher.Hash(key) % uint64(len(l.shards)))
+
+	s := &l.shards[idx]
+	s.mu.Lock()
+	g, ok := s.groups[key]
+	if !ok {
+		g = &sfGroupEntry{lc: l, done: make(chan struct{})}
+		s.groups[key] = g
+	}
+	s.mu.Unlock()
+
+	if !ok {
+		go g.run(context.Background(), s, key)
+	}
+
+	return g.wait(ctx)
+}
+
+func (l *Cache) set(ctx context.Context, key string, val interface{}, stats *Stats) {
+	defer func() {
+		if v := recover(); v != nil {
+			stats.Panics++
+			if l.opts.PanicHandler != nil {
+				l.opts.PanicHandler(key, v)
+			}
+		}
+	}()
+
+	setCtx, cancel := context.WithTimeout(ctx, l.opts.SetTimeout)
+	defer cancel()
+
+	if err := l.c.Set(setCtx, key, val); err != nil {
+		stats.Errors++
+		if l.opts.SetErrorHandler != nil {
+			l.opts.SetErrorHandler(key, err)
+		}
+	}
+}
+
+// Running returns the number of running cache accesses and lookups.
+func (l *Cache) Running() int {
+	var n int
+	for i := range l.shards {
+		s := &l.shards[i]
+		s.mu.Lock()
+		n += len(s.groups)
+		s.mu.Unlock()
+	}
+	return n
+}
+
+// Stats returns statistics about all completed lookups and cache accesses.
+func (l *Cache) Stats() Stats {
+	var stats Stats
+	for i := range l.shards {
+		s := &l.shards[i]
+		s.mu.Lock()
+		stats = stats.add(s.stats)
+		s.mu.Unlock()
+	}
+	return stats
+}
+
 // Func defines a function for looking up values that will be placed in a Cache.
 //
 // If val is nil, by default the value will not be cached. See NewCache and WithCacheNil
@@ -127,118 +239,6 @@ type sfGroupEntry struct {
 	fresh bool
 }
 
-// NewCache returns a new *Cache using c as the underlying Cache and f for
-// looking up missing values.
-//
-// The underlying Cache must be safe for concurrent use.
-//
-// An optional Opts value can be given to control the behaviour of the Cache.
-// Setting opts to nil is equivalent to passing a pointer to a zero Opts value.
-//
-// Any change to opts which after NewCache returns will be ignored.
-//
-// Note: By default nil values will not be cached. Caching of nil values can
-// be enabled by passing custom opts and setting CacheNil to true.
-func NewCache(c scache.Cache, f Func, opts *Opts) *Cache {
-	if opts == nil {
-		opts = &Opts{}
-	}
-
-	if opts.SetTimeout <= 0 {
-		opts.SetTimeout = 250 * time.Millisecond
-	}
-
-	if opts.Timeout <= 0 {
-		opts.Timeout = 250 * time.Millisecond
-	}
-
-	ss := make([]sfGroup, 128) // TODO(nussjustin): Make configurable?
-	for i := range ss {
-		ss[i].groups = make(map[string]*sfGroupEntry)
-	}
-
-	return &Cache{
-		opts: *opts,
-
-		c: c,
-		f: f,
-
-		hasher: sharding.NewHasher(),
-		shards: ss,
-	}
-}
-
-// Get returns the value for the given key.
-//
-// If the key is not found in the underlying Cache or the cached value is stale (its age is greater
-// than the refresh duration, see WithRefreshAfter) it will be looked up using the lookup function
-// specified in NewCache.
-//
-// When the lookup of a stale value fails, Get will continue to return the old value.
-func (l *Cache) Get(ctx context.Context, key string) (val interface{}, age time.Duration, ok bool) {
-	idx := int(l.hasher.Hash(key) % uint64(len(l.shards)))
-
-	s := &l.shards[idx]
-	s.mu.Lock()
-	g, ok := s.groups[key]
-	if !ok {
-		g = &sfGroupEntry{lc: l, done: make(chan struct{})}
-		s.groups[key] = g
-	}
-	s.mu.Unlock()
-
-	if !ok {
-		go g.run(context.Background(), s, key)
-	}
-
-	return g.wait(ctx)
-}
-
-func (l *Cache) set(stats *Stats, key string, val interface{}) {
-	defer func() {
-		if v := recover(); v != nil {
-			stats.Panics++
-			if l.opts.PanicHandler != nil {
-				l.opts.PanicHandler(key, v)
-			}
-		}
-	}()
-
-	setCtx, cancel := context.WithTimeout(context.Background(), l.opts.SetTimeout)
-	defer cancel()
-
-	if err := l.c.Set(setCtx, key, val); err != nil {
-		stats.Errors++
-		if l.opts.SetErrorHandler != nil {
-			l.opts.SetErrorHandler(key, err)
-		}
-	}
-}
-
-// Running returns the number of running cache accesses and lookups.
-func (l *Cache) Running() int {
-	var n int
-	for i := range l.shards {
-		s := &l.shards[i]
-		s.mu.Lock()
-		n += len(s.groups)
-		s.mu.Unlock()
-	}
-	return n
-}
-
-// Stats returns statistics about all completed lookups and cache accesses.
-func (l *Cache) Stats() Stats {
-	var stats Stats
-	for i := range l.shards {
-		s := &l.shards[i]
-		s.mu.Lock()
-		stats = stats.add(s.stats)
-		s.mu.Unlock()
-	}
-	return stats
-}
-
 func (ge *sfGroupEntry) fetch(ctx context.Context, key string) (skipLookup bool) {
 	val, age, ok := ge.lc.c.Get(ctx, key)
 
@@ -286,7 +286,7 @@ func (ge *sfGroupEntry) lookup(ctx context.Context, key string) {
 }
 
 func (ge *sfGroupEntry) run(ctx context.Context, shard *sfGroup, key string) {
-	defer func() {
+	defer func(ctx context.Context) {
 		if v := recover(); v != nil {
 			ge.handlePanic(key, v)
 		}
@@ -294,14 +294,14 @@ func (ge *sfGroupEntry) run(ctx context.Context, shard *sfGroup, key string) {
 		close(ge.done)
 
 		if ge.fresh && ge.ok && (ge.val != nil || ge.lc.opts.CacheNil) {
-			ge.lc.set(&ge.stats, key, ge.val)
+			ge.lc.set(ctx, key, ge.val, &ge.stats)
 		}
 
 		shard.mu.Lock()
 		delete(shard.groups, key)
 		shard.stats = shard.stats.add(ge.stats)
 		shard.mu.Unlock()
-	}()
+	}(ctx)
 
 	ctx, cancel := context.WithTimeout(ctx, ge.lc.opts.Timeout)
 	defer cancel()
