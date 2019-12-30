@@ -148,6 +148,8 @@ type Opts struct {
 	// CacheNil enables caching of nil values when set to true.
 	//
 	// By default nil values will not be cached.
+	//
+	// Only untyped nil values will be ignored. Typed nil values will always be cached.
 	CacheNil bool
 
 	// ErrorHandler will be called when either the cache access or the lookup returns an error.
