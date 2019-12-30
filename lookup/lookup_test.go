@@ -613,3 +613,16 @@ func TestLookupCacheConcurrency(t *testing.T) {
 	checkKeys()
 	assertCalls(1)
 }
+
+func ExampleNewCache() {
+	c := lookup.NewCache(scache.NewLRU(32), func(ctx context.Context, key string) (val interface{}, err error) {
+		return strings.ToUpper(key), nil
+	}, nil)
+
+	// later...
+
+	val, _, _ := c.Get(context.Background(), "hello")
+	if val != "HELLO" {
+		panic("something went wrong... PANIC")
+	}
+}

@@ -169,3 +169,20 @@ func TestShardedCache(t *testing.T) {
 		assertCacheGet(t, c.Shard(key), ctx, key, j)
 	}
 }
+
+func ExampleNewShardedCache() {
+	sc, err := scache.NewShardedCache(64, func(int) scache.Cache {
+		return scache.NewLRU(32)
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	// later...
+
+	val, age, ok := sc.Get(context.Background(), "hello")
+	if ok {
+		// do something with the value...
+		_, _ = val, age
+	}
+}

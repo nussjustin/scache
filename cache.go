@@ -41,7 +41,7 @@ var _ Cache = (*ShardedCache)(nil)
 //
 // A basic factory could look like this:
 //
-//     func(int) Cache { return NewLRU(20) }
+//     func(int) Cache { return NewLRU(32) }
 //
 func NewShardedCache(shards int, factory func(shard int) Cache) (*ShardedCache, error) {
 	if shards < 1 {

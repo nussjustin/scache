@@ -78,3 +78,24 @@ func TestChainedCache(t *testing.T) {
 		assertCacheMiss(t, c3, ctx, "keyB")
 	})
 }
+
+func NewRedisCache() scache.Cache { return nil }
+
+func ExampleNewChainedCache() {
+	cc := scache.NewChainedCache(
+		scache.NewLRU(32),
+		NewRedisCache(), // external, slower cache
+	)
+
+	if err := cc.Set(context.Background(), "hello", "world"); err != nil {
+		panic(err)
+	}
+
+	// later...
+
+	val, age, ok := cc.Get(context.Background(), "hello")
+	if ok {
+		// do something with the value...
+		_, _ = val, age
+	}
+}
