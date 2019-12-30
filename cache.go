@@ -33,6 +33,8 @@ type ShardedCache struct {
 
 var _ Cache = (*ShardedCache)(nil)
 
+const minShards = 1
+
 // NewShardedCache returns a new ShardedCache using the given number of shards.
 //
 // For each shard the factory function will be called with the index of the shard (beginning
@@ -44,7 +46,7 @@ var _ Cache = (*ShardedCache)(nil)
 //     func(int) Cache { return NewLRU(32) }
 //
 func NewShardedCache(shards int, factory func(shard int) Cache) (*ShardedCache, error) {
-	if shards < 1 {
+	if shards < minShards {
 		return nil, fmt.Errorf("invalid shards count %d", shards)
 	}
 

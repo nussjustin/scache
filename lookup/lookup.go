@@ -23,6 +23,8 @@ type Cache struct {
 	shards []sfGroup
 }
 
+const defaultTimeout = 250 * time.Millisecond
+
 // NewCache returns a new *Cache using c as the underlying Cache and f for
 // looking up missing values.
 //
@@ -41,11 +43,11 @@ func NewCache(c scache.Cache, f Func, opts *Opts) *Cache {
 	}
 
 	if opts.SetTimeout <= 0 {
-		opts.SetTimeout = 250 * time.Millisecond
+		opts.SetTimeout = defaultTimeout
 	}
 
 	if opts.Timeout <= 0 {
-		opts.Timeout = 250 * time.Millisecond
+		opts.Timeout = defaultTimeout
 	}
 
 	ss := make([]sfGroup, 128) // TODO(nussjustin): Make configurable?
