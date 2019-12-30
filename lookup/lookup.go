@@ -157,8 +157,9 @@ type sfGroup struct {
 }
 
 type sfGroupEntry struct {
-	lc   *Cache
-	done chan struct{}
+	lc    *Cache
+	stats Stats
+	done  chan struct{}
 
 	val interface{}
 	age time.Duration
@@ -225,7 +226,7 @@ func (l *Cache) Get(ctx context.Context, key string) (val interface{}, age time.
 	s.mu.Unlock()
 
 	if !ok {
-		go g.lookup(s, key)
+		go g.run(context.Background(), s, key)
 	}
 
 	return g.wait(ctx)
@@ -268,70 +269,83 @@ func (l *Cache) Stats() Stats {
 	return stats
 }
 
-func (l *sfGroupEntry) lookup(shard *sfGroup, key string) {
-	var lookupStats Stats
+func (ge *sfGroupEntry) fetch(ctx context.Context, key string) (skipLookup bool) {
+	val, age, ok := ge.lc.c.Get(ctx, key)
 
+	switch {
+	case ok:
+		ge.stats.Hits++
+		ge.val, ge.age, ge.ok = val, age, ok
+		if ge.lc.refreshAfter <= 0 || ge.lc.refreshAfter > ge.age {
+			return true
+		}
+		ge.stats.Refreshes++
+	case ctx.Err() != nil:
+		ge.handleErr(key, ctx.Err())
+		return true
+	default:
+		ge.stats.Misses++
+	}
+
+	return false
+}
+
+func (ge *sfGroupEntry) handleErr(key string, err error) {
+	ge.stats.Errors++
+	if ge.lc.lookupErrFn != nil {
+		ge.lc.lookupErrFn(key, err)
+	}
+}
+
+func (ge *sfGroupEntry) handlePanic(key string, v interface{}) {
+	ge.stats.Panics++
+	if ge.lc.panicFn != nil {
+		ge.lc.panicFn(key, v)
+	}
+}
+
+func (ge *sfGroupEntry) lookup(ctx context.Context, key string) {
+	ge.stats.Lookups++
+
+	if val, err := ge.lc.f(ctx, key); err == nil {
+		ge.fresh = true
+		ge.val, ge.age, ge.ok = val, 0, true
+	} else {
+		ge.handleErr(key, err)
+	}
+}
+
+func (ge *sfGroupEntry) run(ctx context.Context, shard *sfGroup, key string) {
 	defer func() {
 		if v := recover(); v != nil {
-			lookupStats.Panics++
-			if l.lc.panicFn != nil {
-				l.lc.panicFn(key, v)
-			}
+			ge.handlePanic(key, v)
 		}
 
-		close(l.done)
+		close(ge.done)
 
-		if l.fresh && l.ok && (l.val != nil || l.lc.cacheNil) {
-			l.lc.set(&lookupStats, key, l.val)
+		if ge.fresh && ge.ok && (ge.val != nil || ge.lc.cacheNil) {
+			ge.lc.set(&ge.stats, key, ge.val)
 		}
 
 		shard.mu.Lock()
 		delete(shard.groups, key)
-		shard.stats = shard.stats.add(lookupStats)
+		shard.stats = shard.stats.add(ge.stats)
 		shard.mu.Unlock()
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), l.lc.lookupTimeout)
+	ctx, cancel := context.WithTimeout(ctx, ge.lc.lookupTimeout)
 	defer cancel()
 
-	val, age, ok := l.lc.c.Get(ctx, key)
-
-	switch {
-	case ok:
-		lookupStats.Hits++
-		l.val, l.age, l.ok = val, age, ok
-		if l.lc.refreshAfter <= 0 || l.lc.refreshAfter > l.age {
-			return
-		}
-		lookupStats.Refreshes++
-	case ctx.Err() != nil:
-		lookupStats.Errors++
-		if l.lc.lookupErrFn != nil {
-			l.lc.lookupErrFn(key, ctx.Err())
-		}
-		return
-	default:
-		lookupStats.Misses++
-	}
-
-	lookupStats.Lookups++
-
-	if val, err := l.lc.f(ctx, key); err == nil {
-		l.fresh = true
-		l.val, l.age, l.ok = val, 0, true
-	} else {
-		lookupStats.Errors++
-		if l.lc.lookupErrFn != nil {
-			l.lc.lookupErrFn(key, err)
-		}
+	if !ge.fetch(ctx, key) {
+		ge.lookup(ctx, key)
 	}
 }
 
-func (l *sfGroupEntry) wait(ctx context.Context) (val interface{}, age time.Duration, ok bool) {
+func (ge *sfGroupEntry) wait(ctx context.Context) (val interface{}, age time.Duration, ok bool) {
 	select {
 	case <-ctx.Done():
 		return nil, 0, false
-	case <-l.done:
-		return l.val, l.age, l.ok
+	case <-ge.done:
+		return ge.val, ge.age, ge.ok
 	}
 }
