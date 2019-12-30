@@ -94,6 +94,19 @@ func (ft *fakeTime) NowFunc() time.Time {
 	return time.Unix(0, atomic.LoadInt64((*int64)(ft)))
 }
 
+type callbackCache struct {
+	getFunc func(ctx context.Context, key string) (val interface{}, age time.Duration, ok bool)
+	setFunc func(ctx context.Context, key string, val interface{}) error
+}
+
+func (c callbackCache) Get(ctx context.Context, key string) (val interface{}, age time.Duration, ok bool) {
+	return c.getFunc(ctx, key)
+}
+
+func (c callbackCache) Set(ctx context.Context, key string, val interface{}) error {
+	return c.setFunc(ctx, key, val)
+}
+
 type mapCache map[string]interface{}
 
 func (m mapCache) Get(_ context.Context, key string) (val interface{}, age time.Duration, ok bool) {
@@ -341,10 +354,20 @@ func TestLookupCache(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		lru := scache.NewLRU(4)
+		cc := callbackCache{
+			getFunc: func(_ context.Context, _ string) (val interface{}, age time.Duration, ok bool) {
+				return
+			},
+			setFunc: func(_ context.Context, _ string, val interface{}) error {
+				panic("PANIC WHILE SET'TING VALUE")
+			},
+		}
 
 		lookupFunc := func(ctx context.Context, key string) (val interface{}, err error) {
-			panic(strings.ToUpper(key))
+			if key == "Hello" {
+				panic("INVALID KEY")
+			}
+			return strings.ToUpper(key), nil
 		}
 
 		var lastMu sync.Mutex
@@ -368,12 +391,17 @@ func TestLookupCache(t *testing.T) {
 			assertError(t, lastPanic, wantPanic)
 		}
 
-		c := lookup.NewCache(lru, lookupFunc, &lookup.Opts{PanicHandler: onPanic})
+		c := lookup.NewCache(cc, lookupFunc, &lookup.Opts{PanicHandler: onPanic})
 		assertCacheMiss(t, c, ctx, "Hello")
-		assertLookupPanic("Hello", "HELLO")
+		assertLookupPanic("Hello", "INVALID KEY")
 		assertStats(t, c, lookup.Stats{Lookups: 1, Misses: 1, Panics: 1})
 
-		c = lookup.NewCache(lru, lookupFunc, &lookup.Opts{PanicHandler: nil})
+		assertCacheGet(t, c, ctx, "World", "WORLD")
+		waitForInFlight(t, c)
+		assertLookupPanic("World", "PANIC WHILE SET'TING VALUE")
+		assertStats(t, c, lookup.Stats{Lookups: 2, Misses: 2, Panics: 2})
+
+		c = lookup.NewCache(cc, lookupFunc, &lookup.Opts{PanicHandler: nil})
 		assertCacheMiss(t, c, ctx, "Hello") // check that the panic is still handled
 		assertStats(t, c, lookup.Stats{Lookups: 1, Misses: 1, Panics: 1})
 	})
