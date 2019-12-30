@@ -73,13 +73,13 @@ func assertStats(tb testing.TB, c *lookup.Cache, want lookup.Stats) {
 
 func waitForInFlight(tb testing.TB, c *lookup.Cache) {
 	for i := 0; i < 50; i++ {
-		if c.Stats().InFlight == 0 {
+		if c.Running() == 0 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	if n := c.Stats().InFlight; n != 0 {
+	if n := c.Running(); n != 0 {
 		tb.Fatalf("timeout waiting for in-flight lookups to exit. got %d in-flight lookups", n)
 	}
 }
