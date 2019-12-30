@@ -117,6 +117,10 @@ func TestShardedCache(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	if _, err := scache.NewShardedCache(0, nil); err == nil {
+		t.Fatalf("expected an error when passing a non-positive shard count, got nil")
+	}
+
 	const shardN = 4
 
 	shards := make(map[scache.Cache]int, shardN)
