@@ -1,4 +1,4 @@
-# scache [![GoDoc](https://godoc.org/github.com/nussjustin/scache?status.svg)](https://godoc.org/github.com/nussjustin/scache) [![Build Status](https://travis-ci.com/nussjustin/scache.svg?branch=master)](https://travis-ci.com/nussjustin/scache) [![Go Report Card](https://goreportcard.com/badge/github.com/nussjustin/scache)](https://goreportcard.com/report/github.com/nussjustin/scache)
+# scache [![GoDoc](https://godoc.org/github.com/nussjustin/scache?status.svg)](https://godoc.org/github.com/nussjustin/scache) [![Lint](https://github.com/nussjustin/scache/workflows/Lint/badge.svg)](https://github.com/nussjustin/scache/actions?query=workflow%3ALint) [![Test](https://github.com/nussjustin/scache/workflows/Test/badge.svg)](https://github.com/nussjustin/scache/actions?query=workflow%3ATest) [![Go Report Card](https://goreportcard.com/badge/github.com/nussjustin/scache)](https://goreportcard.com/report/github.com/nussjustin/scache)
 
 Package scache implements a simple LRU cache together with various convenience wrappers around Caches including a wrapper for sharding access to multiple Caches.
 
