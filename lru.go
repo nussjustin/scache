@@ -6,6 +6,9 @@ import (
 	"time"
 )
 
+// LRU implements a fixed-capacity Cache that will automatically remove the least recently
+// used cache item once the cache is full and which also allows for manually removing items
+// from the cache.
 type LRU struct {
 	// NowFunc if set will be called instead of time.Now when determining the current time
 	// for age and expiry checks.
