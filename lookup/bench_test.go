@@ -22,7 +22,7 @@ func BenchmarkLookup(b *testing.B) {
 	b.Run("Hit", func(b *testing.B) {
 		c := lookup.NewCache(mapCache{"hit": "hit"}, func(ctx context.Context, key string) (val interface{}, err error) {
 			return nil, nil
-		})
+		}, nil)
 
 		for i := 0; i < b.N; i++ {
 			c.Get(context.Background(), "hit")
@@ -32,7 +32,7 @@ func BenchmarkLookup(b *testing.B) {
 	b.Run("Miss", func(b *testing.B) {
 		c := lookup.NewCache(noopCache{}, func(ctx context.Context, key string) (val interface{}, err error) {
 			return nil, nil
-		})
+		}, nil)
 
 		for i := 0; i < b.N; i++ {
 			c.Get(context.Background(), "miss")

@@ -14,7 +14,7 @@ import (
 //
 // Cache explicitly does not implement the Cache interface.
 type Cache struct {
-	lookupOpts
+	opts Opts
 
 	c scache.Cache
 	f Func
@@ -31,8 +31,49 @@ type Cache struct {
 // Note: val is considered to be nil only if (val == nil) returns true.
 type Func func(ctx context.Context, key string) (val interface{}, err error)
 
-// Opt is the type for functions that can be used to customize a Cache.
-type Opt func(*lookupOpts)
+// Opts can be used to configure or change the behaviour of a Cache.
+type Opts struct {
+	// CacheNil enables caching of nil values when set to true.
+	//
+	// By default nil values will not be cached.
+	CacheNil bool
+
+	// ErrorHandler will be called when either the cache access or the lookup returns an error.
+	//
+	// If nil errors will be ignored.
+	ErrorHandler func(key string, err error)
+
+	// Timeout specifies the timeout for the initial cache access + lookup, ignoring the time
+	// needed to put a value into the cache.
+	//
+	// If Timeout is <= 0 a default timeout of 250ms will be used.
+	Timeout time.Duration
+
+	// PanicHandler will be called whenever a panic occurs either when accessing the underlying
+	// Cache or when looking up a value.
+	//
+	// If nil panics will be ignored.
+	PanicHandler func(key string, v interface{})
+
+	// RefreshAfter specifies the duration after which values in the cache will be treated
+	// as missing and refreshed.
+	//
+	// If a refresh fails the Cache will keep serving the old value and retry the refresh the
+	// next time the underlying cache is checked.
+	//
+	// If RefreshAfter is <= 0, values will never be treated as missing based on their age.
+	RefreshAfter time.Duration
+
+	// SetErrorHandler will be called when updating the underlying Cache fails.
+	//
+	// If nil errors will be ignored.
+	SetErrorHandler func(key string, err error)
+
+	// SetTimeout specifies the timeout for saving a new or updated value into the underlying Cache.
+	//
+	// If SetTimeout is <= 0 a default timeout of 250ms will be used.
+	SetTimeout time.Duration
+}
 
 // Stats contains statistics about a Cache.
 type Stats struct {
@@ -68,84 +109,6 @@ func (s Stats) add(so Stats) Stats {
 	}
 }
 
-type lookupOpts struct {
-	cacheNil bool
-
-	lookupErrFn   func(key string, err error)
-	lookupTimeout time.Duration
-
-	panicFn func(key string, v interface{})
-
-	refreshAfter time.Duration
-
-	setErrFn   func(key string, err error)
-	setTimeout time.Duration
-}
-
-// WithCacheNil enables caching of nil values. By default nil is not cached.
-func WithCacheNil() Opt {
-	return func(opts *lookupOpts) {
-		opts.cacheNil = true
-	}
-}
-
-// WithErrorHandler can be used to set a handler function that is called when a Lookup
-// returns an error.
-//
-// If nil (the default) errors will be ignored.
-func WithErrorHandler(f func(key string, err error)) Opt {
-	return func(opts *lookupOpts) {
-		opts.lookupErrFn = f
-	}
-}
-
-// WithPanicHandler can be used to set a handler function that is called when a Lookup
-// panics.
-//
-// If nil (the default) panics will be ignored.
-func WithPanicHandler(f func(key string, v interface{})) Opt {
-	return func(opts *lookupOpts) {
-		opts.panicFn = f
-	}
-}
-
-// WithRefreshAfter specifies the duration after which values in the cache will be treated
-// as missing and refreshed.
-//
-// If a refresh fails the Cache will keep serving the old value and retry the refresh the
-// next time the underlying cache is checked.
-//
-// If d is <= 0, values will never be treated as missing based on their age.
-func WithRefreshAfter(d time.Duration) Opt {
-	return func(opts *lookupOpts) {
-		opts.refreshAfter = d
-	}
-}
-
-// WithSetErrorHandler can be used to set a handler function that is called when
-// setting a looked up value in the underlying Cache returns an error.
-//
-// If nil (the default) errors will be ignored.
-func WithSetErrorHandler(f func(key string, err error)) Opt {
-	return func(opts *lookupOpts) {
-		opts.setErrFn = f
-	}
-}
-
-// WithSetTimeout sets the timeout for setting values in the underlying Cache.
-func WithSetTimeout(d time.Duration) Opt {
-	return func(opts *lookupOpts) {
-		opts.setTimeout = d
-	}
-}
-
-// WithTimeout sets the timeout for looking up fresh values.
-func WithTimeout(d time.Duration) Opt {
-	return func(opts *lookupOpts) {
-		opts.lookupTimeout = d
-	}
-}
-
 type sfGroup struct {
 	mu     sync.Mutex
 	groups map[string]*sfGroupEntry
@@ -169,21 +132,24 @@ type sfGroupEntry struct {
 //
 // The underlying Cache must be safe for concurrent use.
 //
-// The defaults options when not overridden are:
+// An optional Opts value can be given to control the behaviour of the Cache.
+// Setting opts to nil is equivalent to passing a pointer to a zero Opts value.
 //
-//     WithSetTimeout(250 * time.Millisecond)
-//     WithTimeout(250 * time.Millisecond)
+// Any change to opts which after NewCache returns will be ignored.
 //
-// Note: By default nil values will not be cached. If you want to cache nil
-// values, you can pass WithCacheNil() to NewCache.
-//
-func NewCache(c scache.Cache, f Func, opts ...Opt) *Cache {
-	lopts := lookupOpts{
-		lookupTimeout: 250 * time.Millisecond,
-		setTimeout:    250 * time.Millisecond,
+// Note: By default nil values will not be cached. Caching of nil values can
+// be enabled by passing custom opts and setting CacheNil to true.
+func NewCache(c scache.Cache, f Func, opts *Opts) *Cache {
+	if opts == nil {
+		opts = &Opts{}
 	}
-	for _, opt := range opts {
-		opt(&lopts)
+
+	if opts.SetTimeout <= 0 {
+		opts.SetTimeout = 250 * time.Millisecond
+	}
+
+	if opts.Timeout <= 0 {
+		opts.Timeout = 250 * time.Millisecond
 	}
 
 	ss := make([]sfGroup, 128) // TODO(nussjustin): Make configurable?
@@ -192,7 +158,7 @@ func NewCache(c scache.Cache, f Func, opts ...Opt) *Cache {
 	}
 
 	return &Cache{
-		lookupOpts: lopts,
+		opts: *opts,
 
 		c: c,
 		f: f,
@@ -232,19 +198,19 @@ func (l *Cache) set(stats *Stats, key string, val interface{}) {
 	defer func() {
 		if v := recover(); v != nil {
 			stats.Panics++
-			if l.panicFn != nil {
-				l.panicFn(key, v)
+			if l.opts.PanicHandler != nil {
+				l.opts.PanicHandler(key, v)
 			}
 		}
 	}()
 
-	setCtx, cancel := context.WithTimeout(context.Background(), l.setTimeout)
+	setCtx, cancel := context.WithTimeout(context.Background(), l.opts.SetTimeout)
 	defer cancel()
 
 	if err := l.c.Set(setCtx, key, val); err != nil {
 		stats.Errors++
-		if l.setErrFn != nil {
-			l.setErrFn(key, err)
+		if l.opts.SetErrorHandler != nil {
+			l.opts.SetErrorHandler(key, err)
 		}
 	}
 }
@@ -280,7 +246,7 @@ func (ge *sfGroupEntry) fetch(ctx context.Context, key string) (skipLookup bool)
 	case ok:
 		ge.stats.Hits++
 		ge.val, ge.age, ge.ok = val, age, ok
-		if ge.lc.refreshAfter <= 0 || ge.lc.refreshAfter > ge.age {
+		if ge.lc.opts.RefreshAfter <= 0 || ge.lc.opts.RefreshAfter > ge.age {
 			return true
 		}
 		ge.stats.Refreshes++
@@ -296,15 +262,15 @@ func (ge *sfGroupEntry) fetch(ctx context.Context, key string) (skipLookup bool)
 
 func (ge *sfGroupEntry) handleErr(key string, err error) {
 	ge.stats.Errors++
-	if ge.lc.lookupErrFn != nil {
-		ge.lc.lookupErrFn(key, err)
+	if ge.lc.opts.ErrorHandler != nil {
+		ge.lc.opts.ErrorHandler(key, err)
 	}
 }
 
 func (ge *sfGroupEntry) handlePanic(key string, v interface{}) {
 	ge.stats.Panics++
-	if ge.lc.panicFn != nil {
-		ge.lc.panicFn(key, v)
+	if ge.lc.opts.PanicHandler != nil {
+		ge.lc.opts.PanicHandler(key, v)
 	}
 }
 
@@ -327,7 +293,7 @@ func (ge *sfGroupEntry) run(ctx context.Context, shard *sfGroup, key string) {
 
 		close(ge.done)
 
-		if ge.fresh && ge.ok && (ge.val != nil || ge.lc.cacheNil) {
+		if ge.fresh && ge.ok && (ge.val != nil || ge.lc.opts.CacheNil) {
 			ge.lc.set(&ge.stats, key, ge.val)
 		}
 
@@ -337,7 +303,7 @@ func (ge *sfGroupEntry) run(ctx context.Context, shard *sfGroup, key string) {
 		shard.mu.Unlock()
 	}()
 
-	ctx, cancel := context.WithTimeout(ctx, ge.lc.lookupTimeout)
+	ctx, cancel := context.WithTimeout(ctx, ge.lc.opts.Timeout)
 	defer cancel()
 
 	if !ge.fetch(ctx, key) {
