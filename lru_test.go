@@ -2,17 +2,41 @@ package scache_test
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/nussjustin/scache"
 )
 
-func assertLen(tb testing.TB, want int, lenner interface{ Len() int }) {
+type lenner interface{ Len() int }
+
+func assertLen(tb testing.TB, want int, lenner lenner) {
 	tb.Helper()
 
 	if got := lenner.Len(); want != got {
 		tb.Fatalf("wanted len %d, got %d", want, got)
+	}
+}
+
+type remover interface {
+	Remove(ctx context.Context, key string) (val interface{}, age time.Duration, ok bool)
+}
+
+func assertRemoveWithAge(tb testing.TB, remover remover, ctx context.Context, key string, want interface{}, wantAge time.Duration) {
+	tb.Helper()
+
+	got, gotAge, ok := remover.Remove(ctx, key)
+	if !ok {
+		tb.Fatalf("failed to remove key %q", key)
+	}
+
+	if !reflect.DeepEqual(want, got) {
+		tb.Fatalf("failed to assert value: want %v got %v", want, got)
+	}
+
+	if wantAge != gotAge {
+		tb.Fatalf("failed to assert gotAge: want at least %s got %s", wantAge, gotAge)
 	}
 }
 
@@ -142,6 +166,29 @@ func TestLRUWithTTL(t *testing.T) {
 	assertLen(t, 1, c)
 	assertCacheMiss(t, c, ctx, "foo")
 	assertLen(t, 0, c)
+}
+
+func TestLRU_Remove(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var ft fakeTime
+
+	c := scache.NewLRU(4)
+	c.NowFunc = ft.NowFunc
+
+	assertCacheSet(t, c, ctx, "one", 1)
+	assertCacheSet(t, c, ctx, "two", 2)
+	ft.Add(50 * time.Millisecond)
+	assertCacheSet(t, c, ctx, "three", 3)
+	assertCacheSet(t, c, ctx, "four", 4)
+
+	assertRemoveWithAge(t, c, ctx, "one", 1, 50*time.Millisecond)
+	assertCacheMiss(t, c, ctx, "one")
+	assertLen(t, 3, c)
+	assertRemoveWithAge(t, c, ctx, "four", 4, 0)
+	assertCacheMiss(t, c, ctx, "four")
+	assertLen(t, 2, c)
 }
 
 func BenchmarkLRU(b *testing.B) {
