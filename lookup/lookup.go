@@ -80,13 +80,20 @@ func (l *Cache) Get(ctx context.Context, key string) (val interface{}, age time.
 	s.mu.Lock()
 	g, ok := s.groups[key]
 	if !ok {
-		g = &sfGroupEntry{lc: l, done: make(chan struct{})}
+		g = &sfGroupEntry{
+			lc: l,
+
+			shard: s,
+			key:   key,
+
+			done: make(chan struct{}),
+		}
 		s.groups[key] = g
 	}
 	s.mu.Unlock()
 
 	if !ok {
-		go g.run(context.Background(), s, key)
+		go g.run(context.Background())
 	}
 
 	return g.wait(ctx)
@@ -147,6 +154,10 @@ type Func func(ctx context.Context, key string) (val interface{}, err error)
 
 // Opts can be used to configure or change the behaviour of a Cache.
 type Opts struct {
+	// BackgroundRefresh enables refreshing of expired values in the background and serving of stale values for values
+	// which are getting refreshed in the background.
+	BackgroundRefresh bool
+
 	// CacheNil enables caching of nil values when set to true.
 	//
 	// By default nil values will not be cached.
@@ -231,88 +242,118 @@ type sfGroup struct {
 	stats  Stats
 }
 
+func (g *sfGroup) remove(ge *sfGroupEntry) {
+	g.mu.Lock()
+	delete(g.groups, ge.key)
+	g.stats = ge.shard.stats.add(ge.stats)
+	g.mu.Unlock()
+}
+
 type sfGroupEntry struct {
-	lc    *Cache
+	lc *Cache
+
+	shard *sfGroup
+	key   string
+
 	stats Stats
 	done  chan struct{}
 
 	val interface{}
 	age time.Duration
 	ok  bool
-
-	fresh bool
 }
 
-func (ge *sfGroupEntry) fetch(ctx context.Context, key string) (skipLookup bool) {
-	val, age, ok := ge.lc.c.Get(ctx, key)
-
-	switch {
-	case ok:
-		ge.stats.Hits++
-		ge.val, ge.age, ge.ok = val, age, ok
-		if ge.lc.opts.RefreshAfter <= 0 || ge.lc.opts.RefreshAfter > ge.age {
-			return true
-		}
-		ge.stats.Refreshes++
-	case ctx.Err() != nil:
-		ge.handleErr(key, ctx.Err())
-		return true
+func (ge *sfGroupEntry) closeAndRemove() {
+	select {
+	case <-ge.done:
 	default:
-		ge.stats.Misses++
+		// only happens when we got an error or a panic
+		close(ge.done)
 	}
 
-	return false
+	ge.shard.remove(ge)
 }
 
-func (ge *sfGroupEntry) handleErr(key string, err error) {
+func (ge *sfGroupEntry) handleErr(err error) {
 	ge.stats.Errors++
 	if ge.lc.opts.ErrorHandler != nil {
-		ge.lc.opts.ErrorHandler(key, err)
+		ge.lc.opts.ErrorHandler(ge.key, err)
 	}
 }
 
-func (ge *sfGroupEntry) handlePanic(key string, v interface{}) {
+func (ge *sfGroupEntry) handlePanic(v interface{}) {
 	ge.stats.Panics++
 	if ge.lc.opts.PanicHandler != nil {
-		ge.lc.opts.PanicHandler(key, v)
+		ge.lc.opts.PanicHandler(ge.key, v)
 	}
 }
 
-func (ge *sfGroupEntry) lookup(ctx context.Context, key string) {
+func (ge *sfGroupEntry) fetchCached(ctx context.Context) error {
+	if ge.val, ge.age, ge.ok = ge.lc.c.Get(ctx, ge.key); ge.ok {
+		return nil
+	}
+	return ctx.Err()
+}
+
+func (ge *sfGroupEntry) lookupAndCache(baseCtx, ctx context.Context) {
 	ge.stats.Lookups++
 
-	if val, err := ge.lc.f(ctx, key); err == nil {
-		ge.fresh = true
+	val, err := ge.lc.f(ctx, ge.key)
+	if err != nil {
+		ge.handleErr(err)
+		return
+	}
+
+	select {
+	case <-ge.done:
+		// we are doing a background refresh and have already allowed the waiters to use the cached values.
+		// since there may still be concurrent waiters we must not be modifying ge here to avoid a race
+	default:
 		ge.val, ge.age, ge.ok = val, 0, true
-	} else {
-		ge.handleErr(key, err)
+
+		// close manually so that waiters can return without having to wait for the cache to be updated
+		close(ge.done)
+	}
+
+	if val != nil || ge.lc.opts.CacheNil {
+		ge.lc.set(baseCtx, ge.key, val, &ge.stats)
 	}
 }
 
-func (ge *sfGroupEntry) run(ctx context.Context, shard *sfGroup, key string) {
-	defer func(ctx context.Context) {
+func (ge *sfGroupEntry) run(baseCtx context.Context) {
+	defer func() {
 		if v := recover(); v != nil {
-			ge.handlePanic(key, v)
+			ge.handlePanic(v)
 		}
 
-		close(ge.done)
+		ge.closeAndRemove()
+	}()
 
-		if ge.fresh && ge.ok && (ge.val != nil || ge.lc.opts.CacheNil) {
-			ge.lc.set(ctx, key, ge.val, &ge.stats)
-		}
-
-		shard.mu.Lock()
-		delete(shard.groups, key)
-		shard.stats = shard.stats.add(ge.stats)
-		shard.mu.Unlock()
-	}(ctx)
-
-	ctx, cancel := context.WithTimeout(ctx, ge.lc.opts.Timeout)
+	ctx, cancel := context.WithTimeout(baseCtx, ge.lc.opts.Timeout)
 	defer cancel()
 
-	if !ge.fetch(ctx, key) {
-		ge.lookup(ctx, key)
+	if err := ge.fetchCached(ctx); err != nil {
+		ge.handleErr(err)
+		return
 	}
+
+	if !ge.ok {
+		ge.stats.Misses++
+	} else {
+		ge.stats.Hits++
+
+		if ge.lc.opts.RefreshAfter <= 0 || ge.lc.opts.RefreshAfter > ge.age { // TODO(nussjustin): Add jitter
+			return
+		}
+
+		ge.stats.Refreshes++
+
+		if ge.lc.opts.BackgroundRefresh {
+			close(ge.done)
+		}
+	}
+
+	ge.lookupAndCache(baseCtx, ctx)
 }
 
 func (ge *sfGroupEntry) wait(ctx context.Context) (val interface{}, age time.Duration, ok bool) {

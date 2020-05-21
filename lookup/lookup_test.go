@@ -479,6 +479,41 @@ func TestLookupCache(t *testing.T) {
 		})
 	})
 
+	t.Run("Refresh In Background", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		var ft fakeTime
+
+		lru := scache.NewLRU(4)
+		lru.NowFunc = ft.NowFunc
+
+		var lookups uint64
+
+		c := lookup.NewCache(
+			lru,
+			func(_ context.Context, key string) (val interface{}, err error) {
+				return int(atomic.AddUint64(&lookups, 1)), nil
+			},
+			&lookup.Opts{
+				BackgroundRefresh: true,
+				RefreshAfter:      1 * time.Second,
+			})
+
+		assertCacheGet(t, c, ctx, "hello", 1)
+		assertStats(t, c, lookup.Stats{Lookups: 1, Misses: 1, Hits: 0})
+		assertCacheGet(t, lru, ctx, "hello", 1)
+
+		ft.Add(1 * time.Second)
+
+		assertCacheGet(t, c, ctx, "hello", 1)
+		waitForInFlight(t, c)
+
+		assertCacheGet(t, lru, ctx, "hello", 2)
+		assertStats(t, c, lookup.Stats{Lookups: 2, Misses: 1, Hits: 1, Refreshes: 1})
+		assertCacheGet(t, c, ctx, "hello", 2)
+	})
+
 	t.Run("Set Timeout", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
