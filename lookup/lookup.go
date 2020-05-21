@@ -191,6 +191,14 @@ type Opts struct {
 	// If RefreshAfter is <= 0, values will never be treated as missing based on their age.
 	RefreshAfter time.Duration
 
+	// RefreshAfterJitterFunc can be used to add jitter to the value specified in RefreshAfter.
+	//
+	// This can be useful to avoid thundering herd problems when many entries need to be
+	// refreshed at the same time.
+	//
+	// If nil no jitter will be added.
+	RefreshAfterJitterFunc func() time.Duration
+
 	// SetErrorHandler will be called when updating the underlying Cache fails.
 	//
 	// If nil errors will be ignored.
@@ -200,6 +208,17 @@ type Opts struct {
 	//
 	// If SetTimeout is <= 0 a default timeout of 250ms will be used.
 	SetTimeout time.Duration
+}
+
+func (o Opts) shouldRefresh(age time.Duration) bool {
+	if o.RefreshAfter <= 0 {
+		return false
+	}
+	limit := o.RefreshAfter
+	if o.RefreshAfterJitterFunc != nil {
+		limit -= o.RefreshAfterJitterFunc()
+	}
+	return age >= limit
 }
 
 // Stats contains statistics about a Cache.
@@ -342,7 +361,7 @@ func (ge *sfGroupEntry) run(baseCtx context.Context) {
 	} else {
 		ge.stats.Hits++
 
-		if ge.lc.opts.RefreshAfter <= 0 || ge.lc.opts.RefreshAfter > ge.age { // TODO(nussjustin): Add jitter
+		if !ge.lc.opts.shouldRefresh(ge.age) {
 			return
 		}
 
