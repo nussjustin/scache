@@ -2,13 +2,13 @@ package scache
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"time"
 
 	"github.com/nussjustin/scache/internal/sharding"
 )
 
-// Cache defines methods for setting and retrieving values in a Cache
+// Cache defines methods for setting and retrieving values in a Cache.
 type Cache interface {
 	// Get retrieves the cached value for the given key.
 	//
@@ -33,6 +33,11 @@ type ShardedCache struct {
 
 var _ Cache = (*ShardedCache)(nil)
 
+var (
+	// ErrInvalidShardsCount is returned by NewShardedCache when specifying an invalid number of shards (< 1).
+	ErrInvalidShardsCount = errors.New("invalid shards count")
+)
+
 const minShards = 1
 
 // NewShardedCache returns a new ShardedCache using the given number of shards.
@@ -47,7 +52,7 @@ const minShards = 1
 //
 func NewShardedCache(shards int, factory func(shard int) Cache) (*ShardedCache, error) {
 	if shards < minShards {
-		return nil, fmt.Errorf("invalid shards count %d", shards)
+		return nil, ErrInvalidShardsCount
 	}
 
 	ss := make([]Cache, shards)
