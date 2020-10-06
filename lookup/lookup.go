@@ -20,7 +20,7 @@ type Cache struct {
 	f Func
 
 	hasher sharding.Hasher
-	shards []sfGroup
+	groups []lookupGroup
 }
 
 const defaultTimeout = 250 * time.Millisecond
@@ -50,20 +50,22 @@ func NewCache(c scache.Cache, f Func, opts *Opts) *Cache {
 		opts.Timeout = defaultTimeout
 	}
 
-	ss := make([]sfGroup, 256)
-	for i := range ss {
-		ss[i].groups = make(map[uint64]*sfGroupEntry)
-	}
-
-	return &Cache{
+	l := &Cache{
 		opts: *opts,
 
 		c: c,
 		f: f,
 
 		hasher: sharding.NewHasher(),
-		shards: ss,
+		groups: make([]lookupGroup, 256),
 	}
+	for i := range l.groups {
+		l.groups[i] = lookupGroup{
+			cache:   l,
+			entries: make(map[uint64]*lookupGroupEntry),
+		}
+	}
+	return l
 }
 
 // Get returns the value for the given key.
@@ -75,30 +77,8 @@ func NewCache(c scache.Cache, f Func, opts *Opts) *Cache {
 // When the lookup of a stale value fails, Get will continue to return the old value.
 func (l *Cache) Get(ctx context.Context, key string) (val interface{}, age time.Duration, ok bool) {
 	hash := l.hasher.Hash(key)
-	idx := hash & uint64(len(l.shards)-1)
-
-	s := &l.shards[idx]
-	s.mu.Lock()
-	g, ok := s.groups[hash]
-	if !ok {
-		g = &sfGroupEntry{
-			lc: l,
-
-			shard: s,
-			hash:  hash,
-			key:   key,
-
-			done: make(chan struct{}),
-		}
-		s.groups[hash] = g
-	}
-	s.mu.Unlock()
-
-	if !ok {
-		go g.run(context.Background())
-	}
-
-	return g.wait(ctx)
+	idx := hash & uint64(len(l.groups)-1)
+	return l.groups[idx].get(hash, key).wait(ctx)
 }
 
 func (l *Cache) set(ctx context.Context, key string, val interface{}, stats *Stats) {
@@ -125,10 +105,10 @@ func (l *Cache) set(ctx context.Context, key string, val interface{}, stats *Sta
 // Running returns the number of running cache accesses and lookups.
 func (l *Cache) Running() int {
 	var n int
-	for i := range l.shards {
-		s := &l.shards[i]
+	for i := range l.groups {
+		s := &l.groups[i]
 		s.mu.Lock()
-		n += len(s.groups)
+		n += len(s.entries)
 		s.mu.Unlock()
 	}
 	return n
@@ -137,8 +117,8 @@ func (l *Cache) Running() int {
 // Stats returns statistics about all completed lookups and cache accesses.
 func (l *Cache) Stats() Stats {
 	var stats Stats
-	for i := range l.shards {
-		s := &l.shards[i]
+	for i := range l.groups {
+		s := &l.groups[i]
 		s.mu.Lock()
 		stats = stats.add(s.stats)
 		s.mu.Unlock()
@@ -257,23 +237,53 @@ func (s Stats) add(so Stats) Stats {
 	}
 }
 
-type sfGroup struct {
-	mu     sync.Mutex
-	groups map[uint64]*sfGroupEntry
-	stats  Stats
+type lookupGroup struct {
+	cache *Cache
+
+	mu      sync.Mutex
+	entries map[uint64]*lookupGroupEntry
+	stats   Stats
 }
 
-func (g *sfGroup) remove(ge *sfGroupEntry) {
-	g.mu.Lock()
-	delete(g.groups, ge.hash)
-	g.stats = ge.shard.stats.add(ge.stats)
-	g.mu.Unlock()
+func (lg *lookupGroup) add(hash uint64, key string) *lookupGroupEntry {
+	lge := &lookupGroupEntry{
+		cache: lg.cache,
+
+		group: lg,
+		hash:  hash,
+		key:   key,
+
+		done: make(chan struct{}),
+	}
+	lg.entries[hash] = lge
+	return lge
 }
 
-type sfGroupEntry struct {
-	lc *Cache
+func (lg *lookupGroup) get(hash uint64, key string) *lookupGroupEntry {
+	lg.mu.Lock()
+	sge, ok := lg.entries[hash]
+	if !ok {
+		sge = lg.add(hash, key)
+	}
+	lg.mu.Unlock()
 
-	shard *sfGroup
+	if !ok {
+		go sge.run(context.Background())
+	}
+
+	return sge
+}
+
+func (lg *lookupGroup) remove(sge *lookupGroupEntry) {
+	lg.mu.Lock()
+	delete(lg.entries, sge.hash)
+	lg.stats = sge.group.stats.add(sge.stats)
+	lg.mu.Unlock()
+}
+
+type lookupGroupEntry struct {
+	cache *Cache
+	group *lookupGroup
 	hash  uint64
 	key   string
 
@@ -285,104 +295,104 @@ type sfGroupEntry struct {
 	ok  bool
 }
 
-func (ge *sfGroupEntry) closeAndRemove() {
+func (lge *lookupGroupEntry) closeAndRemove() {
 	select {
-	case <-ge.done:
+	case <-lge.done:
 	default:
 		// only happens when we got an error or a panic
-		close(ge.done)
+		close(lge.done)
 	}
 
-	ge.shard.remove(ge)
+	lge.group.remove(lge)
 }
 
-func (ge *sfGroupEntry) handleErr(err error) {
-	ge.stats.Errors++
-	if ge.lc.opts.ErrorHandler != nil {
-		ge.lc.opts.ErrorHandler(ge.key, err)
-	}
-}
-
-func (ge *sfGroupEntry) handlePanic(v interface{}) {
-	ge.stats.Panics++
-	if ge.lc.opts.PanicHandler != nil {
-		ge.lc.opts.PanicHandler(ge.key, v)
+func (lge *lookupGroupEntry) handleErr(err error) {
+	lge.stats.Errors++
+	if lge.cache.opts.ErrorHandler != nil {
+		lge.cache.opts.ErrorHandler(lge.key, err)
 	}
 }
 
-func (ge *sfGroupEntry) fetchCached(ctx context.Context) error {
-	if ge.val, ge.age, ge.ok = ge.lc.c.Get(ctx, ge.key); ge.ok {
+func (lge *lookupGroupEntry) handlePanic(v interface{}) {
+	lge.stats.Panics++
+	if lge.cache.opts.PanicHandler != nil {
+		lge.cache.opts.PanicHandler(lge.key, v)
+	}
+}
+
+func (lge *lookupGroupEntry) fetchCached(ctx context.Context) error {
+	if lge.val, lge.age, lge.ok = lge.cache.c.Get(ctx, lge.key); lge.ok {
 		return nil
 	}
 	return ctx.Err()
 }
 
-func (ge *sfGroupEntry) lookupAndCache(baseCtx, ctx context.Context) {
-	ge.stats.Lookups++
+func (lge *lookupGroupEntry) lookupAndCache(baseCtx, ctx context.Context) {
+	lge.stats.Lookups++
 
-	val, err := ge.lc.f(ctx, ge.key)
+	val, err := lge.cache.f(ctx, lge.key)
 	if err != nil {
-		ge.handleErr(err)
+		lge.handleErr(err)
 		return
 	}
 
 	select {
-	case <-ge.done:
+	case <-lge.done:
 		// we are doing a background refresh and have already allowed the waiters to use the cached values.
-		// since there may still be concurrent waiters we must not be modifying ge here to avoid a race
+		// since there may still be concurrent waiters we must not be modifying lge here to avoid a race
 	default:
-		ge.val, ge.age, ge.ok = val, 0, true
+		lge.val, lge.age, lge.ok = val, 0, true
 
 		// close manually so that waiters can return without having to wait for the cache to be updated
-		close(ge.done)
+		close(lge.done)
 	}
 
-	if val != nil || ge.lc.opts.CacheNil {
-		ge.lc.set(baseCtx, ge.key, val, &ge.stats)
+	if val != nil || lge.cache.opts.CacheNil {
+		lge.cache.set(baseCtx, lge.key, val, &lge.stats)
 	}
 }
 
-func (ge *sfGroupEntry) run(baseCtx context.Context) {
+func (lge *lookupGroupEntry) run(baseCtx context.Context) {
 	defer func() {
 		if v := recover(); v != nil {
-			ge.handlePanic(v)
+			lge.handlePanic(v)
 		}
 
-		ge.closeAndRemove()
+		lge.closeAndRemove()
 	}()
 
-	ctx, cancel := context.WithTimeout(baseCtx, ge.lc.opts.Timeout)
+	ctx, cancel := context.WithTimeout(baseCtx, lge.cache.opts.Timeout)
 	defer cancel()
 
-	if err := ge.fetchCached(ctx); err != nil {
-		ge.handleErr(err)
+	if err := lge.fetchCached(ctx); err != nil {
+		lge.handleErr(err)
 		return
 	}
 
-	if !ge.ok {
-		ge.stats.Misses++
+	if !lge.ok {
+		lge.stats.Misses++
 	} else {
-		ge.stats.Hits++
+		lge.stats.Hits++
 
-		if !ge.lc.opts.shouldRefresh(ge.age) {
+		if !lge.cache.opts.shouldRefresh(lge.age) {
 			return
 		}
 
-		ge.stats.Refreshes++
+		lge.stats.Refreshes++
 
-		if ge.lc.opts.BackgroundRefresh {
-			close(ge.done)
+		if lge.cache.opts.BackgroundRefresh {
+			close(lge.done)
 		}
 	}
 
-	ge.lookupAndCache(baseCtx, ctx)
+	lge.lookupAndCache(baseCtx, ctx)
 }
 
-func (ge *sfGroupEntry) wait(ctx context.Context) (val interface{}, age time.Duration, ok bool) {
+func (lge *lookupGroupEntry) wait(ctx context.Context) (val interface{}, age time.Duration, ok bool) {
 	select {
 	case <-ctx.Done():
 		return nil, 0, false
-	case <-ge.done:
-		return ge.val, ge.age, ge.ok
+	case <-lge.done:
+		return lge.val, lge.age, lge.ok
 	}
 }
