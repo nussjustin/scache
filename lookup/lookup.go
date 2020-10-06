@@ -50,9 +50,9 @@ func NewCache(c scache.Cache, f Func, opts *Opts) *Cache {
 		opts.Timeout = defaultTimeout
 	}
 
-	ss := make([]sfGroup, 128) // TODO(nussjustin): Make configurable?
+	ss := make([]sfGroup, 256)
 	for i := range ss {
-		ss[i].groups = make(map[string]*sfGroupEntry)
+		ss[i].groups = make(map[uint64]*sfGroupEntry)
 	}
 
 	return &Cache{
@@ -74,21 +74,23 @@ func NewCache(c scache.Cache, f Func, opts *Opts) *Cache {
 //
 // When the lookup of a stale value fails, Get will continue to return the old value.
 func (l *Cache) Get(ctx context.Context, key string) (val interface{}, age time.Duration, ok bool) {
-	idx := int(l.hasher.Hash(key) % uint64(len(l.shards)))
+	hash := l.hasher.Hash(key)
+	idx := hash & uint64(len(l.shards)-1)
 
 	s := &l.shards[idx]
 	s.mu.Lock()
-	g, ok := s.groups[key]
+	g, ok := s.groups[hash]
 	if !ok {
 		g = &sfGroupEntry{
 			lc: l,
 
 			shard: s,
+			hash:  hash,
 			key:   key,
 
 			done: make(chan struct{}),
 		}
-		s.groups[key] = g
+		s.groups[hash] = g
 	}
 	s.mu.Unlock()
 
@@ -257,13 +259,13 @@ func (s Stats) add(so Stats) Stats {
 
 type sfGroup struct {
 	mu     sync.Mutex
-	groups map[string]*sfGroupEntry
+	groups map[uint64]*sfGroupEntry
 	stats  Stats
 }
 
 func (g *sfGroup) remove(ge *sfGroupEntry) {
 	g.mu.Lock()
-	delete(g.groups, ge.key)
+	delete(g.groups, ge.hash)
 	g.stats = ge.shard.stats.add(ge.stats)
 	g.mu.Unlock()
 }
@@ -272,6 +274,7 @@ type sfGroupEntry struct {
 	lc *Cache
 
 	shard *sfGroup
+	hash  uint64
 	key   string
 
 	stats Stats
