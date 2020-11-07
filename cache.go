@@ -33,10 +33,8 @@ type ShardedCache struct {
 
 var _ Cache = (*ShardedCache)(nil)
 
-var (
-	// ErrInvalidShardsCount is returned by NewShardedCache when specifying an invalid number of shards (< 1).
-	ErrInvalidShardsCount = errors.New("invalid shards count")
-)
+// ErrInvalidShardsCount is returned by NewShardedCache when specifying an invalid number of shards (< 1).
+var ErrInvalidShardsCount = errors.New("invalid shards count")
 
 const minShards = 1
 
