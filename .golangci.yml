@@ -3,6 +3,7 @@ linters:
   disable:
       - godox
       - lll
+      - nlreturn
       - wsl
 run:
   skip-files:
