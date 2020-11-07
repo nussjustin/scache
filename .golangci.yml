@@ -1,10 +1,12 @@
 linters:
   enable-all: true
   disable:
-      - godox
-      - lll
-      - nlreturn
-      - wsl
+    - exhaustivestruct
+    - godox
+    - lll
+    - nlreturn
+    - wrapcheck
+    - wsl
 run:
   skip-files:
     - _test.go$
