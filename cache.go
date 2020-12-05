@@ -24,6 +24,19 @@ type Cache interface {
 	Set(ctx context.Context, key string, val interface{}) error
 }
 
+// Noop implements an always empty cache.
+type Noop struct{}
+
+// Get implements the Cache interface.
+func (n Noop) Get(ctx context.Context, key string) (val interface{}, age time.Duration, ok bool) {
+	return nil, 0, false
+}
+
+// Set implements the Cache interface.
+func (n Noop) Set(ctx context.Context, key string, val interface{}) error {
+	return nil
+}
+
 // ShardedCache implements a Cache that partitions entries into multiple underlying Cache
 // instances to reduce contention on each Cache instance and increase scalability.
 type ShardedCache struct {

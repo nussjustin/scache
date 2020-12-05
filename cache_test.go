@@ -113,6 +113,19 @@ func TestLockedCache(t *testing.T) {
 	}
 }
 
+func TestNoopCache(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const key = "foo"
+
+	c := scache.Noop{}
+
+	assertCacheMiss(t, c, ctx, key)
+	assertCacheSet(t, c, ctx, key, key)
+	assertCacheMiss(t, c, ctx, key)
+}
+
 func TestShardedCache(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
