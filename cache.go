@@ -9,42 +9,41 @@ import (
 )
 
 // Cache defines methods for setting and retrieving values in a Cache.
-type Cache interface {
+type Cache[T any] interface {
 	// Get retrieves the cached value for the given key.
 	//
 	// The age return value contains the duration for which the value is in the cache.
-	Get(ctx context.Context, key string) (val interface{}, age time.Duration, ok bool)
+	Get(ctx context.Context, key string) (val T, age time.Duration, ok bool)
 
 	// Set adds the given value to the cache.
 	//
-	// If there is already a value with the same key in the Cache, it will be removed.
-	//
-	// The fresh parameter specifies for how long the value should be treated as fresh.
-	// A negative value indicates that the value should always be treated as fresh.
-	Set(ctx context.Context, key string, val interface{}) error
+	// If there is already a value with the same key in the Cache, it will be replaced.
+	Set(ctx context.Context, key string, val T) error
 }
 
 // Noop implements an always empty cache.
-type Noop struct{}
+type Noop[T any] struct{}
+
+var _ Cache[interface{}] = &Noop[interface{}]{}
 
 // Get implements the Cache interface.
-func (n Noop) Get(ctx context.Context, key string) (val interface{}, age time.Duration, ok bool) {
-	return nil, 0, false
+func (n Noop[T]) Get(context.Context, string) (val T, age time.Duration, ok bool) {
+	return
 }
 
 // Set implements the Cache interface.
-func (n Noop) Set(ctx context.Context, key string, val interface{}) error {
+func (n Noop[T]) Set(context.Context, string, T) error {
 	return nil
 }
 
 // ShardedCache implements a Cache that partitions entries into multiple underlying Cache
 // instances to reduce contention on each Cache instance and increase scalability.
-type ShardedCache struct {
+type ShardedCache[T any] struct {
 	hasher sharding.Hasher
-	shards []Cache
+	shards []Cache[T]
 }
 
-var _ Cache = (*ShardedCache)(nil)
+var _ Cache[interface{}] = &ShardedCache[interface{}]{}
 
 // ErrInvalidShardsCount is returned by NewShardedCache when specifying an invalid number of shards (< 1).
 var ErrInvalidShardsCount = errors.New("invalid shards count")
@@ -61,17 +60,17 @@ const minShards = 1
 //
 //     func(int) Cache { return NewLRU(32) }
 //
-func NewShardedCache(shards int, factory func(shard int) Cache) (*ShardedCache, error) {
+func NewShardedCache[T any](shards int, factory func(shard int) Cache[T]) (*ShardedCache[T], error) {
 	if shards < minShards {
 		return nil, ErrInvalidShardsCount
 	}
 
-	ss := make([]Cache, shards)
+	ss := make([]Cache[T], shards)
 	for i := range ss {
 		ss[i] = factory(i)
 	}
 
-	return &ShardedCache{hasher: sharding.NewHasher(), shards: ss}, nil
+	return &ShardedCache[T]{hasher: sharding.NewHasher(), shards: ss}, nil
 }
 
 // Get implements the Cache interface.
@@ -80,7 +79,7 @@ func NewShardedCache(shards int, factory func(shard int) Cache) (*ShardedCache, 
 //
 //     s.Shard(key).Get(ctx, key)
 //
-func (s *ShardedCache) Get(ctx context.Context, key string) (val interface{}, age time.Duration, ok bool) {
+func (s *ShardedCache[T]) Get(ctx context.Context, key string) (val T, age time.Duration, ok bool) {
 	return s.Shard(key).Get(ctx, key)
 }
 
@@ -90,12 +89,12 @@ func (s *ShardedCache) Get(ctx context.Context, key string) (val interface{}, ag
 //
 //     s.Shard(key).Set(ctx, key, val)
 //
-func (s *ShardedCache) Set(ctx context.Context, key string, val interface{}) error {
+func (s *ShardedCache[T]) Set(ctx context.Context, key string, val T) error {
 	return s.Shard(key).Set(ctx, key, val)
 }
 
 // Shard returns the underlying Cache used for the given key.
-func (s *ShardedCache) Shard(key string) Cache {
+func (s *ShardedCache[T]) Shard(key string) Cache[T] {
 	idx := int(s.hasher.Hash(key) % uint64(len(s.shards)))
 	return s.shards[idx]
 }

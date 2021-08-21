@@ -19,11 +19,11 @@ func assertLen(tb testing.TB, want int, lenner lenner) {
 	}
 }
 
-type remover interface {
-	Remove(ctx context.Context, key string) (val interface{}, age time.Duration, ok bool)
+type remover[T any] interface {
+	Remove(ctx context.Context, key string) (val T, age time.Duration, ok bool)
 }
 
-func assertRemoveWithAge(tb testing.TB, remover remover, ctx context.Context, key string, want interface{}, wantAge time.Duration) {
+func assertRemoveWithAge[T any](tb testing.TB, remover remover[T], ctx context.Context, key string, want T, wantAge time.Duration) {
 	tb.Helper()
 
 	got, gotAge, ok := remover.Remove(ctx, key)
@@ -48,7 +48,7 @@ func TestLRU(t *testing.T) {
 
 	var ft fakeTime
 
-	c := scache.NewLRU(3)
+	c := scache.NewLRU[interface{}](3)
 	c.NowFunc = ft.NowFunc
 
 	if got := c.Cap(); size != got {
@@ -57,72 +57,72 @@ func TestLRU(t *testing.T) {
 
 	const key1, key2, key3, key4 = "key1", "key2", "key3", "key4"
 
-	assertCacheMiss(t, c, ctx, key1)
-	assertCacheMiss(t, c, ctx, key2)
-	assertCacheMiss(t, c, ctx, key3)
-	assertCacheMiss(t, c, ctx, key4)
+	assertCacheMiss[interface{}](t, c, ctx, key1)
+	assertCacheMiss[interface{}](t, c, ctx, key2)
+	assertCacheMiss[interface{}](t, c, ctx, key3)
+	assertCacheMiss[interface{}](t, c, ctx, key4)
 	assertLen(t, 0, c)
 
-	assertCacheSet(t, c, ctx, key1, 1)
-	assertCacheGetWithAge(t, c, ctx, key1, 1, 0*time.Millisecond)
-	assertCacheMiss(t, c, ctx, key2)
-	assertCacheMiss(t, c, ctx, key3)
-	assertCacheMiss(t, c, ctx, key4)
+	assertCacheSet[interface{}](t, c, ctx, key1, 1)
+	assertCacheGetWithAge[interface{}](t, c, ctx, key1, 1, 0*time.Millisecond)
+	assertCacheMiss[interface{}](t, c, ctx, key2)
+	assertCacheMiss[interface{}](t, c, ctx, key3)
+	assertCacheMiss[interface{}](t, c, ctx, key4)
 	assertLen(t, 1, c)
 
 	ft.Add(1 * time.Millisecond)
 
-	assertCacheSet(t, c, ctx, key2, 2)
-	assertCacheGetWithAge(t, c, ctx, key2, 2, 0*time.Millisecond)
-	assertCacheGetWithAge(t, c, ctx, key1, 1, 1*time.Millisecond)
-	assertCacheMiss(t, c, ctx, key3)
-	assertCacheMiss(t, c, ctx, key4)
+	assertCacheSet[interface{}](t, c, ctx, key2, 2)
+	assertCacheGetWithAge[interface{}](t, c, ctx, key2, 2, 0*time.Millisecond)
+	assertCacheGetWithAge[interface{}](t, c, ctx, key1, 1, 1*time.Millisecond)
+	assertCacheMiss[interface{}](t, c, ctx, key3)
+	assertCacheMiss[interface{}](t, c, ctx, key4)
 	assertLen(t, 2, c)
 
 	ft.Add(5 * time.Millisecond)
 
-	assertCacheSet(t, c, ctx, key3, 3)
-	assertCacheGetWithAge(t, c, ctx, key3, 3, 0*time.Millisecond)
-	assertCacheGetWithAge(t, c, ctx, key1, 1, 6*time.Millisecond)
-	assertCacheGetWithAge(t, c, ctx, key2, 2, 5*time.Millisecond)
-	assertCacheMiss(t, c, ctx, key4)
+	assertCacheSet[interface{}](t, c, ctx, key3, 3)
+	assertCacheGetWithAge[interface{}](t, c, ctx, key3, 3, 0*time.Millisecond)
+	assertCacheGetWithAge[interface{}](t, c, ctx, key1, 1, 6*time.Millisecond)
+	assertCacheGetWithAge[interface{}](t, c, ctx, key2, 2, 5*time.Millisecond)
+	assertCacheMiss[interface{}](t, c, ctx, key4)
 	assertLen(t, 3, c)
 
 	ft.Add(1 * time.Millisecond)
 
-	assertCacheSet(t, c, ctx, key4, 4)
-	assertCacheGetWithAge(t, c, ctx, key4, 4, 0*time.Millisecond)
-	assertCacheMiss(t, c, ctx, key3)
-	assertCacheGetWithAge(t, c, ctx, key1, 1, 7*time.Millisecond)
-	assertCacheGetWithAge(t, c, ctx, key2, 2, 6*time.Millisecond)
+	assertCacheSet[interface{}](t, c, ctx, key4, 4)
+	assertCacheGetWithAge[interface{}](t, c, ctx, key4, 4, 0*time.Millisecond)
+	assertCacheMiss[interface{}](t, c, ctx, key3)
+	assertCacheGetWithAge[interface{}](t, c, ctx, key1, 1, 7*time.Millisecond)
+	assertCacheGetWithAge[interface{}](t, c, ctx, key2, 2, 6*time.Millisecond)
 	assertLen(t, 3, c)
 
 	ft.Add(1 * time.Millisecond)
 
-	assertCacheSet(t, c, ctx, key4, "3!")
-	assertCacheGetWithAge(t, c, ctx, key4, "3!", 0*time.Millisecond)
-	assertCacheMiss(t, c, ctx, key3)
-	assertCacheGetWithAge(t, c, ctx, key1, 1, 8*time.Millisecond)
-	assertCacheGetWithAge(t, c, ctx, key2, 2, 7*time.Millisecond)
+	assertCacheSet[interface{}](t, c, ctx, key4, "3!")
+	assertCacheGetWithAge[interface{}](t, c, ctx, key4, "3!", 0*time.Millisecond)
+	assertCacheMiss[interface{}](t, c, ctx, key3)
+	assertCacheGetWithAge[interface{}](t, c, ctx, key1, 1, 8*time.Millisecond)
+	assertCacheGetWithAge[interface{}](t, c, ctx, key2, 2, 7*time.Millisecond)
 	assertLen(t, 3, c)
 
 	ft.Add(1 * time.Millisecond)
 
-	assertCacheSet(t, c, ctx, key3, "3!")
-	assertCacheGetWithAge(t, c, ctx, key3, "3!", 0*time.Millisecond)
-	assertCacheMiss(t, c, ctx, key4)
-	assertCacheGetWithAge(t, c, ctx, key2, 2, 8*time.Millisecond)
-	assertCacheGetWithAge(t, c, ctx, key1, 1, 9*time.Millisecond)
+	assertCacheSet[interface{}](t, c, ctx, key3, "3!")
+	assertCacheGetWithAge[interface{}](t, c, ctx, key3, "3!", 0*time.Millisecond)
+	assertCacheMiss[interface{}](t, c, ctx, key4)
+	assertCacheGetWithAge[interface{}](t, c, ctx, key2, 2, 8*time.Millisecond)
+	assertCacheGetWithAge[interface{}](t, c, ctx, key1, 1, 9*time.Millisecond)
 	assertLen(t, 3, c)
 
 	ft.Add(1 * time.Millisecond)
 
-	assertCacheSet(t, c, ctx, key3, "3!!")
-	assertCacheSet(t, c, ctx, key4, "4!")
-	assertCacheGetWithAge(t, c, ctx, key1, 1, 10*time.Millisecond)
-	assertCacheMiss(t, c, ctx, key2)
-	assertCacheGetWithAge(t, c, ctx, key3, "3!!", 0*time.Millisecond)
-	assertCacheGetWithAge(t, c, ctx, key4, "4!", 0*time.Millisecond)
+	assertCacheSet[interface{}](t, c, ctx, key3, "3!!")
+	assertCacheSet[interface{}](t, c, ctx, key4, "4!")
+	assertCacheGetWithAge[interface{}](t, c, ctx, key1, 1, 10*time.Millisecond)
+	assertCacheMiss[interface{}](t, c, ctx, key2)
+	assertCacheGetWithAge[interface{}](t, c, ctx, key3, "3!!", 0*time.Millisecond)
+	assertCacheGetWithAge[interface{}](t, c, ctx, key4, "4!", 0*time.Millisecond)
 	assertLen(t, 3, c)
 }
 
@@ -132,39 +132,39 @@ func TestLRUWithTTL(t *testing.T) {
 
 	var ft fakeTime
 
-	c := scache.NewLRUWithTTL(2, 150*time.Millisecond)
+	c := scache.NewLRUWithTTL[string](2, 150*time.Millisecond)
 	c.NowFunc = ft.NowFunc
 
-	assertCacheSet(t, c, ctx, "hello", "world")
-	assertCacheGet(t, c, ctx, "hello", "world")
+	assertCacheSet[string](t, c, ctx, "hello", "world")
+	assertCacheGet[string](t, c, ctx, "hello", "world")
 	assertLen(t, 1, c)
 
 	ft.Add(150 * time.Millisecond)
 
 	assertLen(t, 1, c)
-	assertCacheMiss(t, c, ctx, "hello")
+	assertCacheMiss[string](t, c, ctx, "hello")
 
-	assertCacheSet(t, c, ctx, "hello", "world!")
-	assertCacheGet(t, c, ctx, "hello", "world!")
+	assertCacheSet[string](t, c, ctx, "hello", "world!")
+	assertCacheGet[string](t, c, ctx, "hello", "world!")
 	assertLen(t, 1, c)
 
 	ft.Add(50 * time.Millisecond)
 
-	assertCacheSet(t, c, ctx, "foo", "bar")
-	assertCacheGet(t, c, ctx, "foo", "bar")
+	assertCacheSet[string](t, c, ctx, "foo", "bar")
+	assertCacheGet[string](t, c, ctx, "foo", "bar")
 	assertLen(t, 2, c)
 
 	ft.Add(100 * time.Millisecond)
 
 	assertLen(t, 2, c)
-	assertCacheMiss(t, c, ctx, "hello")
+	assertCacheMiss[string](t, c, ctx, "hello")
 	assertLen(t, 1, c)
-	assertCacheGet(t, c, ctx, "foo", "bar")
+	assertCacheGet[string](t, c, ctx, "foo", "bar")
 
 	ft.Add(50 * time.Millisecond)
 
 	assertLen(t, 1, c)
-	assertCacheMiss(t, c, ctx, "foo")
+	assertCacheMiss[string](t, c, ctx, "foo")
 	assertLen(t, 0, c)
 }
 
@@ -174,20 +174,20 @@ func TestLRU_Remove(t *testing.T) {
 
 	var ft fakeTime
 
-	c := scache.NewLRU(4)
+	c := scache.NewLRU[int](4)
 	c.NowFunc = ft.NowFunc
 
-	assertCacheSet(t, c, ctx, "one", 1)
-	assertCacheSet(t, c, ctx, "two", 2)
+	assertCacheSet[int](t, c, ctx, "one", 1)
+	assertCacheSet[int](t, c, ctx, "two", 2)
 	ft.Add(50 * time.Millisecond)
-	assertCacheSet(t, c, ctx, "three", 3)
-	assertCacheSet(t, c, ctx, "four", 4)
+	assertCacheSet[int](t, c, ctx, "three", 3)
+	assertCacheSet[int](t, c, ctx, "four", 4)
 
-	assertRemoveWithAge(t, c, ctx, "one", 1, 50*time.Millisecond)
-	assertCacheMiss(t, c, ctx, "one")
+	assertRemoveWithAge[int](t, c, ctx, "one", 1, 50*time.Millisecond)
+	assertCacheMiss[int](t, c, ctx, "one")
 	assertLen(t, 3, c)
-	assertRemoveWithAge(t, c, ctx, "four", 4, 0)
-	assertCacheMiss(t, c, ctx, "four")
+	assertRemoveWithAge[int](t, c, ctx, "four", 4, 0)
+	assertCacheMiss[int](t, c, ctx, "four")
 	assertLen(t, 2, c)
 }
 
@@ -203,9 +203,9 @@ func BenchmarkLRU(b *testing.B) {
 			"key4",
 		}
 
-		c := scache.NewLRU(4)
+		c := scache.NewLRU[string](4)
 		for _, key := range keys {
-			assertCacheSet(b, c, ctx, key, key)
+			assertCacheSet[string](b, c, ctx, key, key)
 		}
 
 		for i := 0; i < b.N; i++ {
@@ -229,9 +229,9 @@ func BenchmarkLRU(b *testing.B) {
 				"key4",
 			}
 
-			c := scache.NewLRU(len(keys) / 2)
+			c := scache.NewLRU[string](len(keys) / 2)
 			for _, key := range keys {
-				assertCacheSet(b, c, ctx, key, key)
+				assertCacheSet[string](b, c, ctx, key, key)
 			}
 
 			b.ResetTimer()
@@ -251,7 +251,7 @@ func BenchmarkLRU(b *testing.B) {
 
 			const key = "key"
 
-			c := scache.NewLRU(b.N)
+			c := scache.NewLRU[string](b.N)
 
 			for i := 0; i < b.N; i++ {
 				if err := c.Set(ctx, key, key); err != nil {

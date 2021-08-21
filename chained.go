@@ -5,32 +5,33 @@ import (
 	"time"
 )
 
-type chainedCache struct {
-	cs []Cache
+type chainedCache[T any] struct {
+	cs []Cache[T]
 }
 
-var _ Cache = (*chainedCache)(nil)
+var _ Cache[interface{}] = &chainedCache[interface{}]{}
 
 // NewChainedCache returns a Cache that tries to retrieve values from multiple caches in
 // order and adds new values to multiple caches at once.
-func NewChainedCache(cs ...Cache) Cache {
-	css := make([]Cache, len(cs))
+func NewChainedCache[T any](cs ...Cache[T]) Cache[T] {
+	css := make([]Cache[T], len(cs))
 	copy(css, cs)
-	return &chainedCache{cs: css}
+	return &chainedCache[T]{cs: css}
 }
 
 // Get implements the Cache interface.
-func (cc *chainedCache) Get(ctx context.Context, key string) (val interface{}, age time.Duration, ok bool) {
+func (cc *chainedCache[T]) Get(ctx context.Context, key string) (val T, age time.Duration, ok bool) {
 	for _, c := range cc.cs {
 		val, age, ok = c.Get(ctx, key)
 		if ok {
 			return
 		}
 	}
-	return nil, 0, false
+	var zero T
+	return zero, 0, false
 }
 
-func (cc *chainedCache) Set(ctx context.Context, key string, val interface{}) error {
+func (cc *chainedCache[T]) Set(ctx context.Context, key string, val T) error {
 	for _, c := range cc.cs {
 		if err := c.Set(ctx, key, val); err != nil {
 			return err

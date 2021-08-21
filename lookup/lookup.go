@@ -2,6 +2,7 @@ package lookup
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -13,14 +14,14 @@ import (
 // up via a cache-level lookup function and cached in the underlying cache for further calls.
 //
 // Cache explicitly does not implement the Cache interface.
-type Cache struct {
+type Cache[T any] struct {
 	opts Opts
 
-	c scache.Cache
-	f Func
+	c scache.Cache[T]
+	f Func[T]
 
 	hasher sharding.Hasher
-	groups []lookupGroup
+	groups []lookupGroup[T]
 }
 
 const defaultTimeout = 250 * time.Millisecond
@@ -34,10 +35,7 @@ const defaultTimeout = 250 * time.Millisecond
 // Setting opts to nil is equivalent to passing a pointer to a zero Opts value.
 //
 // Any change to opts which after NewCache returns will be ignored.
-//
-// Note: By default nil values will not be cached. Caching of nil values can
-// be enabled by passing custom opts and setting CacheNil to true.
-func NewCache(c scache.Cache, f Func, opts *Opts) *Cache {
+func NewCache[T any](c scache.Cache[T], f Func[T], opts *Opts) *Cache[T] {
 	if opts == nil {
 		opts = &Opts{}
 	}
@@ -50,19 +48,19 @@ func NewCache(c scache.Cache, f Func, opts *Opts) *Cache {
 		opts.Timeout = defaultTimeout
 	}
 
-	l := &Cache{
+	l := &Cache[T]{
 		opts: *opts,
 
 		c: c,
 		f: f,
 
 		hasher: sharding.NewHasher(),
-		groups: make([]lookupGroup, 256),
+		groups: make([]lookupGroup[T], 256),
 	}
 	for i := range l.groups {
-		l.groups[i] = lookupGroup{
+		l.groups[i] = lookupGroup[T]{
 			cache:   l,
-			entries: make(map[uint64]*lookupGroupEntry),
+			entries: make(map[uint64]*lookupGroupEntry[T]),
 		}
 	}
 	return l
@@ -75,13 +73,13 @@ func NewCache(c scache.Cache, f Func, opts *Opts) *Cache {
 // specified in NewCache.
 //
 // When the lookup of a stale value fails, Get will continue to return the old value.
-func (l *Cache) Get(ctx context.Context, key string) (val interface{}, age time.Duration, ok bool) {
+func (l *Cache[T]) Get(ctx context.Context, key string) (val T, age time.Duration, ok bool) {
 	hash := l.hasher.Hash(key)
 	idx := hash & uint64(len(l.groups)-1)
 	return l.groups[idx].get(hash, key).wait(ctx)
 }
 
-func (l *Cache) set(ctx context.Context, key string, val interface{}, stats *Stats) {
+func (l *Cache[T]) set(ctx context.Context, key string, val T, stats *Stats) {
 	defer func() {
 		if v := recover(); v != nil {
 			stats.Panics++
@@ -103,7 +101,7 @@ func (l *Cache) set(ctx context.Context, key string, val interface{}, stats *Sta
 }
 
 // Running returns the number of running cache accesses and lookups.
-func (l *Cache) Running() int {
+func (l *Cache[T]) Running() int {
 	var n int
 	for i := range l.groups {
 		s := &l.groups[i]
@@ -115,7 +113,7 @@ func (l *Cache) Running() int {
 }
 
 // Stats returns statistics about all completed lookups and cache accesses.
-func (l *Cache) Stats() Stats {
+func (l *Cache[T]) Stats() Stats {
 	var stats Stats
 	for i := range l.groups {
 		s := &l.groups[i]
@@ -128,24 +126,18 @@ func (l *Cache) Stats() Stats {
 
 // Func defines a function for looking up values that will be placed in a Cache.
 //
-// If val is nil, by default the value will not be cached. See NewCache and WithCacheNil
-// for a way to cache nil values.
-//
-// Note: val is considered to be nil only if (val == nil) returns true.
-type Func func(ctx context.Context, key string) (val interface{}, err error)
+// If err is ErrSkip the result will not be cached.
+type Func[T any] func(ctx context.Context, key string) (val T, err error)
+
+var (
+	ErrSkip = errors.New("skipping result")
+)
 
 // Opts can be used to configure or change the behaviour of a Cache.
 type Opts struct {
 	// BackgroundRefresh enables refreshing of expired values in the background and serving of stale values for values
 	// which are getting refreshed in the background.
 	BackgroundRefresh bool
-
-	// CacheNil enables caching of nil values when set to true.
-	//
-	// By default nil values will not be cached.
-	//
-	// Only untyped nil values will be ignored. Typed nil values will always be cached.
-	CacheNil bool
 
 	// ErrorHandler will be called when either the cache access or the lookup returns an error.
 	//
@@ -237,16 +229,16 @@ func (s Stats) add(so Stats) Stats {
 	}
 }
 
-type lookupGroup struct {
-	cache *Cache
+type lookupGroup[T any] struct {
+	cache *Cache[T]
 
 	mu      sync.Mutex
-	entries map[uint64]*lookupGroupEntry
+	entries map[uint64]*lookupGroupEntry[T]
 	stats   Stats
 }
 
-func (lg *lookupGroup) add(hash uint64, key string) *lookupGroupEntry {
-	lge := &lookupGroupEntry{
+func (lg *lookupGroup[T]) add(hash uint64, key string) *lookupGroupEntry[T] {
+	lge := &lookupGroupEntry[T]{
 		cache: lg.cache,
 
 		group: lg,
@@ -259,7 +251,7 @@ func (lg *lookupGroup) add(hash uint64, key string) *lookupGroupEntry {
 	return lge
 }
 
-func (lg *lookupGroup) get(hash uint64, key string) *lookupGroupEntry {
+func (lg *lookupGroup[T]) get(hash uint64, key string) *lookupGroupEntry[T] {
 	lg.mu.Lock()
 	sge, ok := lg.entries[hash]
 	if !ok {
@@ -274,28 +266,28 @@ func (lg *lookupGroup) get(hash uint64, key string) *lookupGroupEntry {
 	return sge
 }
 
-func (lg *lookupGroup) remove(sge *lookupGroupEntry) {
+func (lg *lookupGroup[T]) remove(sge *lookupGroupEntry[T]) {
 	lg.mu.Lock()
 	delete(lg.entries, sge.hash)
 	lg.stats = sge.group.stats.add(sge.stats)
 	lg.mu.Unlock()
 }
 
-type lookupGroupEntry struct {
-	cache *Cache
-	group *lookupGroup
+type lookupGroupEntry[T any] struct {
+	cache *Cache[T]
+	group *lookupGroup[T]
 	hash  uint64
 	key   string
 
 	stats Stats
 	done  chan struct{}
 
-	val interface{}
+	val T
 	age time.Duration
 	ok  bool
 }
 
-func (lge *lookupGroupEntry) closeAndRemove() {
+func (lge *lookupGroupEntry[T]) closeAndRemove() {
 	select {
 	case <-lge.done:
 	default:
@@ -306,32 +298,32 @@ func (lge *lookupGroupEntry) closeAndRemove() {
 	lge.group.remove(lge)
 }
 
-func (lge *lookupGroupEntry) handleErr(err error) {
+func (lge *lookupGroupEntry[T]) handleErr(err error) {
 	lge.stats.Errors++
 	if lge.cache.opts.ErrorHandler != nil {
 		lge.cache.opts.ErrorHandler(lge.key, err)
 	}
 }
 
-func (lge *lookupGroupEntry) handlePanic(v interface{}) {
+func (lge *lookupGroupEntry[T]) handlePanic(v interface{}) {
 	lge.stats.Panics++
 	if lge.cache.opts.PanicHandler != nil {
 		lge.cache.opts.PanicHandler(lge.key, v)
 	}
 }
 
-func (lge *lookupGroupEntry) fetchCached(ctx context.Context) error {
+func (lge *lookupGroupEntry[T]) fetchCached(ctx context.Context) error {
 	if lge.val, lge.age, lge.ok = lge.cache.c.Get(ctx, lge.key); lge.ok {
 		return nil
 	}
 	return ctx.Err()
 }
 
-func (lge *lookupGroupEntry) lookupAndCache(baseCtx, ctx context.Context) {
+func (lge *lookupGroupEntry[T]) lookupAndCache(baseCtx, ctx context.Context) {
 	lge.stats.Lookups++
 
 	val, err := lge.cache.f(ctx, lge.key)
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrSkip) {
 		lge.handleErr(err)
 		return
 	}
@@ -347,12 +339,12 @@ func (lge *lookupGroupEntry) lookupAndCache(baseCtx, ctx context.Context) {
 		close(lge.done)
 	}
 
-	if val != nil || lge.cache.opts.CacheNil {
+	if lge.ok && err == nil {
 		lge.cache.set(baseCtx, lge.key, val, &lge.stats)
 	}
 }
 
-func (lge *lookupGroupEntry) run(baseCtx context.Context) {
+func (lge *lookupGroupEntry[T]) run(baseCtx context.Context) {
 	defer func() {
 		if v := recover(); v != nil {
 			lge.handlePanic(v)
@@ -388,10 +380,10 @@ func (lge *lookupGroupEntry) run(baseCtx context.Context) {
 	lge.lookupAndCache(baseCtx, ctx)
 }
 
-func (lge *lookupGroupEntry) wait(ctx context.Context) (val interface{}, age time.Duration, ok bool) {
+func (lge *lookupGroupEntry[T]) wait(ctx context.Context) (val T, age time.Duration, ok bool) {
 	select {
 	case <-ctx.Done():
-		return nil, 0, false
+		return
 	case <-lge.done:
 		return lge.val, lge.age, lge.ok
 	}

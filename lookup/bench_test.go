@@ -3,25 +3,15 @@ package lookup_test
 import (
 	"context"
 	"testing"
-	"time"
 
+	"github.com/nussjustin/scache"
 	"github.com/nussjustin/scache/lookup"
 )
 
-type noopCache struct{}
-
-func (n noopCache) Get(context.Context, string) (val interface{}, age time.Duration, ok bool) {
-	return
-}
-
-func (n noopCache) Set(context.Context, string, interface{}) error {
-	return nil
-}
-
 func BenchmarkLookup(b *testing.B) {
 	b.Run("Hit", func(b *testing.B) {
-		c := lookup.NewCache(mapCache{"hit": "hit"}, func(ctx context.Context, key string) (val interface{}, err error) {
-			return nil, nil
+		c := lookup.NewCache[string](mapCache[string]{"hit": "hit"}, func(ctx context.Context, key string) (val string, err error) {
+			return "", lookup.ErrSkip
 		}, nil)
 
 		for i := 0; i < b.N; i++ {
@@ -30,8 +20,11 @@ func BenchmarkLookup(b *testing.B) {
 	})
 
 	b.Run("Miss", func(b *testing.B) {
-		c := lookup.NewCache(noopCache{}, func(ctx context.Context, key string) (val interface{}, err error) {
-			return nil, nil
+		// Syntax "var nc scache.Noop[string]" currently causes an error because the "[" can not be parsed
+		nc := scache.Noop[string]{}
+
+		c := lookup.NewCache[string](nc, func(ctx context.Context, key string) (val string, err error) {
+			return "", lookup.ErrSkip
 		}, nil)
 
 		for i := 0; i < b.N; i++ {

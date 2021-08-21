@@ -12,7 +12,7 @@ import (
 	"github.com/nussjustin/scache"
 )
 
-func assertCacheGet(tb testing.TB, c scache.Cache, ctx context.Context, key string, want interface{}) {
+func assertCacheGet[T any](tb testing.TB, c scache.Cache[T], ctx context.Context, key string, want T) {
 	tb.Helper()
 
 	got, _, ok := c.Get(ctx, key)
@@ -25,7 +25,7 @@ func assertCacheGet(tb testing.TB, c scache.Cache, ctx context.Context, key stri
 	}
 }
 
-func assertCacheGetWithAge(tb testing.TB, c scache.Cache, ctx context.Context, key string, want interface{}, wantAge time.Duration) {
+func assertCacheGetWithAge[T any](tb testing.TB, c scache.Cache[T], ctx context.Context, key string, want T, wantAge time.Duration) {
 	tb.Helper()
 
 	got, gotAge, ok := c.Get(ctx, key)
@@ -42,7 +42,7 @@ func assertCacheGetWithAge(tb testing.TB, c scache.Cache, ctx context.Context, k
 	}
 }
 
-func assertCacheMiss(tb testing.TB, c scache.Cache, ctx context.Context, key string) {
+func assertCacheMiss[T any](tb testing.TB, c scache.Cache[T], ctx context.Context, key string) {
 	tb.Helper()
 
 	if val, _, ok := c.Get(ctx, key); ok {
@@ -50,15 +50,15 @@ func assertCacheMiss(tb testing.TB, c scache.Cache, ctx context.Context, key str
 	}
 }
 
-func assertCacheSet(tb testing.TB, c scache.Cache, ctx context.Context, key string, val interface{}) {
+func assertCacheSet[T any](tb testing.TB, c scache.Cache[T], ctx context.Context, key string, val T) {
 	tb.Helper()
 
 	if err := c.Set(ctx, key, val); err != nil {
-		tb.Fatalf("failed to set key %q to value %q: %s", key, val, err)
+		tb.Fatalf("failed to set key %q to value %v: %s", key, val, err)
 	}
 }
 
-func assertCacheSetError(tb testing.TB, c scache.Cache, ctx context.Context, key string, val interface{}, werr error) {
+func assertCacheSetError[T any](tb testing.TB, c scache.Cache[T], ctx context.Context, key string, val T, werr error) {
 	tb.Helper()
 
 	if err := c.Set(ctx, key, val); err == nil {
@@ -92,14 +92,14 @@ func TestLockedCache(t *testing.T) {
 
 	const keysN = 64
 
-	c := scache.NewLRU(keysN)
+	c := scache.NewLRU[string](keysN)
 
 	var wg sync.WaitGroup
 	for i := 0; i < keysN; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			assertCacheSet(t, c, ctx, strconv.Itoa(i), strconv.Itoa(i))
+			assertCacheSet[string](t, c, ctx, strconv.Itoa(i), strconv.Itoa(i))
 		}(i)
 	}
 	wg.Wait()
@@ -109,7 +109,7 @@ func TestLockedCache(t *testing.T) {
 	}
 
 	for i := 0; i < keysN; i++ {
-		assertCacheGet(t, c, ctx, strconv.Itoa(i), strconv.Itoa(i))
+		assertCacheGet[string](t, c, ctx, strconv.Itoa(i), strconv.Itoa(i))
 	}
 }
 
@@ -119,31 +119,31 @@ func TestNoopCache(t *testing.T) {
 
 	const key = "foo"
 
-	c := scache.Noop{}
+	c := scache.Noop[string]{}
 
-	assertCacheMiss(t, c, ctx, key)
-	assertCacheSet(t, c, ctx, key, key)
-	assertCacheMiss(t, c, ctx, key)
+	assertCacheMiss[string](t, c, ctx, key)
+	assertCacheSet[string](t, c, ctx, key, key)
+	assertCacheMiss[string](t, c, ctx, key)
 }
 
 func TestShardedCache(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if _, err := scache.NewShardedCache(0, nil); err == nil {
+	if _, err := scache.NewShardedCache[int](0, nil); err == nil {
 		t.Fatalf("expected an error when passing a non-positive shard count, got nil")
 	}
 
 	const shardN = 4
 
-	shards := make(map[scache.Cache]int, shardN)
-	shardByIndex := make(map[int]scache.Cache, shardN)
+	shards := make(map[scache.Cache[int]]int, shardN)
+	shardByIndex := make(map[int]scache.Cache[int], shardN)
 
-	c, err := scache.NewShardedCache(shardN, func(shard int) scache.Cache {
+	c, err := scache.NewShardedCache[int](shardN, func(shard int) scache.Cache[int] {
 		if len(shards) != shard {
 			t.Fatalf("wanted shard index %d, got %d", len(shards), shard)
 		}
-		c := scache.NewLRU(shard + 4)
+		c := scache.NewLRU[int](shard + 4)
 		shards[c] = shard
 		shardByIndex[shard] = c
 		return c
@@ -168,24 +168,24 @@ func TestShardedCache(t *testing.T) {
 			t.Fatalf("wanted shard %#v at index %d, got %#v", shardByIndex[shardIdx], shardIdx, shard)
 		}
 
-		assertCacheMiss(t, c, ctx, key)
-		assertCacheMiss(t, c.Shard(key), ctx, key)
+		assertCacheMiss[int](t, c, ctx, key)
+		assertCacheMiss[int](t, c.Shard(key), ctx, key)
 
-		assertCacheSet(t, c, ctx, key, i)
-		assertCacheGet(t, c, ctx, key, i)
-		assertCacheGet(t, c.Shard(key), ctx, key, i)
+		assertCacheSet[int](t, c, ctx, key, i)
+		assertCacheGet[int](t, c, ctx, key, i)
+		assertCacheGet[int](t, c.Shard(key), ctx, key, i)
 
 		j := i + 1
 
-		assertCacheSet(t, c.Shard(key), ctx, key, j)
-		assertCacheGet(t, c, ctx, key, j)
-		assertCacheGet(t, c.Shard(key), ctx, key, j)
+		assertCacheSet[int](t, c.Shard(key), ctx, key, j)
+		assertCacheGet[int](t, c, ctx, key, j)
+		assertCacheGet[int](t, c.Shard(key), ctx, key, j)
 	}
 }
 
 func ExampleNewShardedCache() {
-	sc, err := scache.NewShardedCache(64, func(int) scache.Cache {
-		return scache.NewLRU(32)
+	sc, err := scache.NewShardedCache(64, func(int) scache.Cache[string] {
+		return scache.NewLRU[string](32)
 	})
 	if err != nil {
 		panic(err)
