@@ -664,7 +664,7 @@ func TestLookupCacheConcurrency(t *testing.T) {
 	assertCalls(1)
 }
 
-func ExampleNewCache() {
+func ExampleCache() {
 	c := lookup.NewCache[string](scache.NewLRU[string](32), func(ctx context.Context, key string) (val string, err error) {
 		return strings.ToUpper(key), nil
 	}, nil)

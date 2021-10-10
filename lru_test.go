@@ -2,7 +2,10 @@ package scache_test
 
 import (
 	"context"
+	"fmt"
+	"log"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 
@@ -260,4 +263,137 @@ func BenchmarkLRU(b *testing.B) {
 			}
 		})
 	})
+}
+
+func getUserID(ctx context.Context) int {
+	return 1
+}
+
+func ExampleLRU() {
+	ctx := context.TODO()
+
+	type User struct {
+		ID   int
+		Name string
+		Age  int
+	}
+
+	user := User{ID: 1, Name: "Gopher", Age: 12}
+
+	lru := scache.NewLRU[User](32)
+
+	if err := lru.Set(ctx, strconv.Itoa(user.ID), user); err != nil {
+		log.Fatalf("failed to cache user %d: %s", user.ID, err)
+	}
+
+	// ... later
+
+	userID := getUserID(ctx)
+
+	// Ignore age of cache entry
+	user, _, ok := lru.Get(ctx, strconv.Itoa(userID))
+	if !ok {
+		log.Fatalf("user with ID %d not found in cache", userID)
+	}
+
+	fmt.Printf("%+v\n", user)
+
+	// Output:
+	//
+	// {ID:1 Name:Gopher Age:12}
+}
+
+func getUserIDs(ctx context.Context) []int {
+	return []int{1, 2, 3, 4, 5}
+}
+
+func ExampleLRU_overflow() {
+	ctx := context.TODO()
+
+	type User struct {
+		ID   int
+		Name string
+		Age  int
+	}
+
+	lru := scache.NewLRU[User](3)
+
+	users := []User{
+		{ID: 1, Name: "Blue Gopher", Age: 12},
+		{ID: 2, Name: "Green Gopher", Age: 7},
+		{ID: 3, Name: "Pink Gopher", Age: 4},
+		{ID: 4, Name: "Grey Gopher", Age: 10},
+	}
+
+	for _, user := range users {
+		if err := lru.Set(ctx, strconv.Itoa(user.ID), user); err != nil {
+			log.Fatalf("failed to cache user %d: %s", user.ID, err)
+		}
+	}
+
+	// Fetch user to ensure it is not thrown out when we go over the limit.
+	if _, _, ok := lru.Get(ctx, strconv.Itoa(users[1].ID)); !ok {
+		log.Fatalf("user with ID %d not found in cache!", users[1].ID)
+	}
+
+	newUser := User{ID: 5, Name: "Rainbox Gopher", Age: 1}
+
+	if err := lru.Set(ctx, strconv.Itoa(newUser.ID), newUser); err != nil {
+		log.Fatalf("failed to cache user %d: %s", newUser.ID, err)
+	}
+
+	// ... later
+
+	userIDs := getUserIDs(ctx)
+
+	for _, userID := range userIDs {
+		user, _, ok := lru.Get(ctx, strconv.Itoa(userID))
+		if !ok {
+			fmt.Printf("user with ID %d not found in cache!\n", userID)
+			continue
+		}
+
+		fmt.Printf("%+v\n", user)
+	}
+
+	// Output:
+	//
+	// user with ID 1 not found in cache!
+	// {ID:2 Name:Green Gopher Age:7}
+	// user with ID 3 not found in cache!
+	// {ID:4 Name:Grey Gopher Age:10}
+	// {ID:5 Name:Rainbox Gopher Age:1}
+}
+
+func ExampleLRU_withTTL() {
+	ctx := context.TODO()
+
+	lru := scache.NewLRUWithTTL[int](32, 100*time.Millisecond)
+
+	if err := lru.Set(ctx, "user:1:friends", 1337); err != nil {
+		log.Fatalf("failed to cache users friends: %s", err)
+	}
+
+	friends, _, ok := lru.Get(ctx, "user:1:friends")
+	if !ok {
+		fmt.Println("could not find total number of users friends in cache  :-(")
+		return
+	}
+
+	fmt.Printf("user 1 got %d friends\n", friends)
+
+	time.Sleep(100 * time.Millisecond) // ... later
+
+	friends, _, ok = lru.Get(ctx, "user:1:friends")
+	if !ok {
+		fmt.Println("could not find total number of users friends in cache :-(")
+		return
+	}
+
+	fmt.Printf("user 1 got %d friends\n", friends)
+
+	// Output:
+	//
+	// user 1 got 1337 friends
+	// could not find total number of users friends in cache :-(
 }

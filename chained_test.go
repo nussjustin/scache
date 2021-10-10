@@ -81,7 +81,7 @@ func TestChainedCache(t *testing.T) {
 
 func NewRedisCache[T any]() scache.Cache[T] { return nil }
 
-func ExampleNewChainedCache() {
+func ExampleChainedCache() {
 	cc := scache.NewChainedCache[string](
 		scache.NewLRU[string](32),
 		NewRedisCache[string](), // external, slower cache
