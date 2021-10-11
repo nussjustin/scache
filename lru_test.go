@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/nussjustin/scache"
+	"go4.org/mem"
 )
 
 type lenner interface{ Len() int }
@@ -23,13 +24,13 @@ func assertLen(tb testing.TB, want int, lenner lenner) {
 }
 
 type remover[T any] interface {
-	Remove(ctx context.Context, key string) (val T, age time.Duration, ok bool)
+	Remove(ctx context.Context, key mem.RO) (val T, age time.Duration, ok bool)
 }
 
 func assertRemoveWithAge[T any](tb testing.TB, remover remover[T], ctx context.Context, key string, want T, wantAge time.Duration) {
 	tb.Helper()
 
-	got, gotAge, ok := remover.Remove(ctx, key)
+	got, gotAge, ok := remover.Remove(ctx, mem.S(key))
 	if !ok {
 		tb.Fatalf("failed to remove key %q", key)
 	}
@@ -58,7 +59,7 @@ func TestLRU(t *testing.T) {
 		t.Fatalf("wanted cache with cap %d, got cap %d", size, got)
 	}
 
-	const key1, key2, key3, key4 = "key1", "key2", "key3", "key4"
+	key1, key2, key3, key4 := "key1", "key2", "key3", "key4"
 
 	assertCacheMiss[interface{}](t, c, ctx, key1)
 	assertCacheMiss[interface{}](t, c, ctx, key2)
@@ -214,7 +215,7 @@ func BenchmarkLRU(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			key := keys[i%len(keys)]
 
-			if _, _, ok := c.Get(ctx, key); !ok {
+			if _, _, ok := c.Get(ctx, mem.S(key)); !ok {
 				b.Fatalf("failed to get key %q", key)
 			}
 		}
@@ -242,7 +243,7 @@ func BenchmarkLRU(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				key := keys[i%len(keys)]
 
-				if err := c.Set(ctx, key, key); err != nil {
+				if err := c.Set(ctx, mem.S(key), key); err != nil {
 					b.Fatalf("failed to set key %q to value %q: %s", key, key, err)
 				}
 			}
@@ -257,7 +258,7 @@ func BenchmarkLRU(b *testing.B) {
 			c := scache.NewLRU[string](b.N)
 
 			for i := 0; i < b.N; i++ {
-				if err := c.Set(ctx, key, key); err != nil {
+				if err := c.Set(ctx, mem.S(key), key); err != nil {
 					b.Fatalf("failed to set key %q to value %q: %s", key, key, err)
 				}
 			}
@@ -282,7 +283,7 @@ func ExampleLRU() {
 
 	lru := scache.NewLRU[User](32)
 
-	if err := lru.Set(ctx, strconv.Itoa(user.ID), user); err != nil {
+	if err := lru.Set(ctx, mem.S(strconv.Itoa(user.ID)), user); err != nil {
 		log.Fatalf("failed to cache user %d: %s", user.ID, err)
 	}
 
@@ -291,7 +292,7 @@ func ExampleLRU() {
 	userID := getUserID(ctx)
 
 	// Ignore age of cache entry
-	user, _, ok := lru.Get(ctx, strconv.Itoa(userID))
+	user, _, ok := lru.Get(ctx, mem.S(strconv.Itoa(userID)))
 	if !ok {
 		log.Fatalf("user with ID %d not found in cache", userID)
 	}
@@ -326,19 +327,19 @@ func ExampleLRU_overflow() {
 	}
 
 	for _, user := range users {
-		if err := lru.Set(ctx, strconv.Itoa(user.ID), user); err != nil {
+		if err := lru.Set(ctx, mem.S(strconv.Itoa(user.ID)), user); err != nil {
 			log.Fatalf("failed to cache user %d: %s", user.ID, err)
 		}
 	}
 
 	// Fetch user to ensure it is not thrown out when we go over the limit.
-	if _, _, ok := lru.Get(ctx, strconv.Itoa(users[1].ID)); !ok {
+	if _, _, ok := lru.Get(ctx, mem.S(strconv.Itoa(users[1].ID))); !ok {
 		log.Fatalf("user with ID %d not found in cache!", users[1].ID)
 	}
 
 	newUser := User{ID: 5, Name: "Rainbox Gopher", Age: 1}
 
-	if err := lru.Set(ctx, strconv.Itoa(newUser.ID), newUser); err != nil {
+	if err := lru.Set(ctx, mem.S(strconv.Itoa(newUser.ID)), newUser); err != nil {
 		log.Fatalf("failed to cache user %d: %s", newUser.ID, err)
 	}
 
@@ -347,7 +348,7 @@ func ExampleLRU_overflow() {
 	userIDs := getUserIDs(ctx)
 
 	for _, userID := range userIDs {
-		user, _, ok := lru.Get(ctx, strconv.Itoa(userID))
+		user, _, ok := lru.Get(ctx, mem.S(strconv.Itoa(userID)))
 		if !ok {
 			fmt.Printf("user with ID %d not found in cache!\n", userID)
 			continue
@@ -370,11 +371,11 @@ func ExampleLRU_withTTL() {
 
 	lru := scache.NewLRUWithTTL[int](32, 100*time.Millisecond)
 
-	if err := lru.Set(ctx, "user:1:friends", 1337); err != nil {
+	if err := lru.Set(ctx, mem.S("user:1:friends"), 1337); err != nil {
 		log.Fatalf("failed to cache users friends: %s", err)
 	}
 
-	friends, _, ok := lru.Get(ctx, "user:1:friends")
+	friends, _, ok := lru.Get(ctx, mem.S("user:1:friends"))
 	if !ok {
 		fmt.Println("could not find total number of users friends in cache  :-(")
 		return
@@ -384,7 +385,7 @@ func ExampleLRU_withTTL() {
 
 	time.Sleep(100 * time.Millisecond) // ... later
 
-	friends, _, ok = lru.Get(ctx, "user:1:friends")
+	friends, _, ok = lru.Get(ctx, mem.S("user:1:friends"))
 	if !ok {
 		fmt.Println("could not find total number of users friends in cache :-(")
 		return

@@ -6,16 +6,17 @@ import (
 	"time"
 
 	"github.com/nussjustin/scache"
+	"go4.org/mem"
 )
 
 type contextCacheCache[T any] struct {
 }
 
-func (c contextCacheCache[T]) Get(context.Context, string) (val T, age time.Duration, ok bool) {
+func (c contextCacheCache[T]) Get(context.Context, mem.RO) (val T, age time.Duration, ok bool) {
 	return
 }
 
-func (c contextCacheCache[T]) Set(ctx context.Context, _ string, _ T) error {
+func (c contextCacheCache[T]) Set(ctx context.Context, _ mem.RO, _ T) error {
 	return ctx.Err()
 }
 
@@ -87,13 +88,13 @@ func ExampleChainedCache() {
 		NewRedisCache[string](), // external, slower cache
 	)
 
-	if err := cc.Set(context.Background(), "hello", "world"); err != nil {
+	if err := cc.Set(context.Background(), mem.S("hello"), "world"); err != nil {
 		panic(err)
 	}
 
 	// later...
 
-	val, age, ok := cc.Get(context.Background(), "hello")
+	val, age, ok := cc.Get(context.Background(), mem.S("hello"))
 	if ok {
 		// do something with the value...
 		_, _ = val, age

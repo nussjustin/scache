@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/nussjustin/scache"
-	"github.com/nussjustin/scache/internal/sharding"
+	"go4.org/mem"
 )
 
 // Cache implements a cache wrapper where on each cache miss the value will be looked
@@ -20,7 +20,6 @@ type Cache[T any] struct {
 	c scache.Cache[T]
 	f Func[T]
 
-	hasher sharding.Hasher
 	groups []lookupGroup[T]
 }
 
@@ -54,7 +53,6 @@ func NewCache[T any](c scache.Cache[T], f Func[T], opts *Opts) *Cache[T] {
 		c: c,
 		f: f,
 
-		hasher: sharding.NewHasher(),
 		groups: make([]lookupGroup[T], 256),
 	}
 	for i := range l.groups {
@@ -73,13 +71,13 @@ func NewCache[T any](c scache.Cache[T], f Func[T], opts *Opts) *Cache[T] {
 // specified in NewCache.
 //
 // When the lookup of a stale value fails, Get will continue to return the old value.
-func (l *Cache[T]) Get(ctx context.Context, key string) (val T, age time.Duration, ok bool) {
-	hash := l.hasher.Hash(key)
+func (l *Cache[T]) Get(ctx context.Context, key mem.RO) (val T, age time.Duration, ok bool) {
+	hash := key.MapHash()
 	idx := hash & uint64(len(l.groups)-1)
 	return l.groups[idx].get(hash, key).wait(ctx)
 }
 
-func (l *Cache[T]) set(ctx context.Context, key string, val T, stats *Stats) {
+func (l *Cache[T]) set(ctx context.Context, key mem.RO, val T, stats *Stats) {
 	defer func() {
 		if v := recover(); v != nil {
 			stats.Panics++
@@ -127,7 +125,7 @@ func (l *Cache[T]) Stats() Stats {
 // Func defines a function for looking up values that will be placed in a Cache.
 //
 // If err is ErrSkip the result will not be cached.
-type Func[T any] func(ctx context.Context, key string) (val T, err error)
+type Func[T any] func(ctx context.Context, key mem.RO) (val T, err error)
 
 var (
 	ErrSkip = errors.New("skipping result")
@@ -142,7 +140,7 @@ type Opts struct {
 	// ErrorHandler will be called when either the cache access or the lookup returns an error.
 	//
 	// If nil errors will be ignored.
-	ErrorHandler func(key string, err error)
+	ErrorHandler func(key mem.RO, err error)
 
 	// Timeout specifies the timeout for the initial cache access + lookup, ignoring the time
 	// needed to put a value into the cache.
@@ -154,7 +152,7 @@ type Opts struct {
 	// Cache or when looking up a value.
 	//
 	// If nil panics will be ignored.
-	PanicHandler func(key string, v interface{})
+	PanicHandler func(key mem.RO, v interface{})
 
 	// RefreshAfter specifies the duration after which values in the cache will be treated
 	// as missing and refreshed.
@@ -176,7 +174,7 @@ type Opts struct {
 	// SetErrorHandler will be called when updating the underlying Cache fails.
 	//
 	// If nil errors will be ignored.
-	SetErrorHandler func(key string, err error)
+	SetErrorHandler func(key mem.RO, err error)
 
 	// SetTimeout specifies the timeout for saving a new or updated value into the underlying Cache.
 	//
@@ -237,7 +235,7 @@ type lookupGroup[T any] struct {
 	stats   Stats
 }
 
-func (lg *lookupGroup[T]) add(hash uint64, key string) *lookupGroupEntry[T] {
+func (lg *lookupGroup[T]) add(hash uint64, key mem.RO) *lookupGroupEntry[T] {
 	lge := &lookupGroupEntry[T]{
 		cache: lg.cache,
 
@@ -251,7 +249,7 @@ func (lg *lookupGroup[T]) add(hash uint64, key string) *lookupGroupEntry[T] {
 	return lge
 }
 
-func (lg *lookupGroup[T]) get(hash uint64, key string) *lookupGroupEntry[T] {
+func (lg *lookupGroup[T]) get(hash uint64, key mem.RO) *lookupGroupEntry[T] {
 	lg.mu.Lock()
 	sge, ok := lg.entries[hash]
 	if !ok {
@@ -277,7 +275,7 @@ type lookupGroupEntry[T any] struct {
 	cache *Cache[T]
 	group *lookupGroup[T]
 	hash  uint64
-	key   string
+	key   mem.RO
 
 	stats Stats
 	done  chan struct{}

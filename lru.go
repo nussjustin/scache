@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"go4.org/mem"
 )
 
 // LRU implements a fixed-capacity Cache that will automatically remove the least recently
@@ -18,7 +20,7 @@ type LRU[T any] struct {
 	ttl time.Duration
 
 	mu         sync.Mutex
-	entries    map[string]*lruItem[T]
+	entries    map[uint64]*lruItem[T]
 	head, tail *lruItem[T]
 	free       *lruItem[T]
 }
@@ -26,8 +28,9 @@ type LRU[T any] struct {
 type lruItem[T any] struct {
 	prev, next *lruItem[T]
 
-	key string
-	val T
+	key     mem.RO
+	keyHash uint64
+	val     T
 
 	added time.Time
 	ttl   time.Duration
@@ -49,19 +52,19 @@ func NewLRU[T any](size int) *LRU[T] {
 // If ttl is <= 0, no TTL is used. This is the same as using NewLRU.
 func NewLRUWithTTL[T any](size int, ttl time.Duration) *LRU[T] {
 	return &LRU[T]{
-		entries: make(map[string]*lruItem[T]),
+		entries: make(map[uint64]*lruItem[T]),
 		cap:     size,
 		ttl:     ttl,
 	}
 }
 
-func (l *LRU[T]) addLocked(key string, val T, added time.Time) {
+func (l *LRU[T]) addLocked(key mem.RO, val T, added time.Time) {
 	var item *lruItem[T]
 	if l.free != nil {
 		item, l.free = l.free, nil
-		item.key, item.val, item.added, item.ttl = key, val, added, l.ttl
+		item.key, item.keyHash, item.val, item.added, item.ttl = key, key.MapHash(), val, added, l.ttl
 	} else {
-		item = &lruItem[T]{key: key, val: val, added: added, ttl: l.ttl}
+		item = &lruItem[T]{key: key, keyHash: key.MapHash(), val: val, added: added, ttl: l.ttl}
 	}
 
 	item.next = l.head
@@ -71,15 +74,15 @@ func (l *LRU[T]) addLocked(key string, val T, added time.Time) {
 	} else {
 		l.head, l.tail = item, item
 	}
-	l.entries[item.key] = item
+	l.entries[item.keyHash] = item
 }
 
 func (l *LRU[T]) deleteLocked(item *lruItem[T]) {
-	delete(l.entries, item.key)
+	delete(l.entries, item.keyHash)
 	l.unmountLocked(item)
 
 	var zero T
-	item.key, item.val = "", zero
+	item.key, item.keyHash, item.val = mem.RO{}, 0, zero
 	l.free = item
 }
 
@@ -116,11 +119,11 @@ func (l *LRU[T]) Cap() int {
 }
 
 // Get implements the Cache interface.
-func (l *LRU[T]) Get(ctx context.Context, key string) (val T, age time.Duration, ok bool) {
+func (l *LRU[T]) Get(ctx context.Context, key mem.RO) (val T, age time.Duration, ok bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if item := l.entries[key]; item != nil {
+	if item := l.entries[key.MapHash()]; item != nil {
 		age = l.since(item.added)
 		if item.ttl <= 0 || item.ttl > age {
 			l.moveToFrontLocked(item)
@@ -140,11 +143,11 @@ func (l *LRU[T]) Len() int {
 }
 
 // Remove removes a given key from the cache and returns the old value if the cache contained the key.
-func (l *LRU[T]) Remove(ctx context.Context, key string) (val T, age time.Duration, ok bool) {
+func (l *LRU[T]) Remove(ctx context.Context, key mem.RO) (val T, age time.Duration, ok bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if item := l.entries[key]; item != nil {
+	if item := l.entries[key.MapHash()]; item != nil {
 		age = l.since(item.added)
 		if item.ttl <= 0 || item.ttl > age {
 			val, ok = item.val, true
@@ -155,7 +158,7 @@ func (l *LRU[T]) Remove(ctx context.Context, key string) (val T, age time.Durati
 }
 
 // Set implements the Cache interface.
-func (l *LRU[T]) Set(ctx context.Context, key string, val T) error {
+func (l *LRU[T]) Set(ctx context.Context, key mem.RO, val T) error {
 	var now time.Time
 	if l.NowFunc != nil {
 		now = l.NowFunc()
@@ -166,7 +169,7 @@ func (l *LRU[T]) Set(ctx context.Context, key string, val T) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if item := l.entries[key]; item != nil {
+	if item := l.entries[key.MapHash()]; item != nil {
 		item.added = now
 		item.val = val
 		l.moveToFrontLocked(item)

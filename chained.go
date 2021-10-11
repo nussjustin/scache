@@ -3,6 +3,8 @@ package scache
 import (
 	"context"
 	"time"
+
+	"go4.org/mem"
 )
 
 type chainedCache[T any] struct {
@@ -20,7 +22,7 @@ func NewChainedCache[T any](cs ...Cache[T]) Cache[T] {
 }
 
 // Get implements the Cache interface.
-func (cc *chainedCache[T]) Get(ctx context.Context, key string) (val T, age time.Duration, ok bool) {
+func (cc *chainedCache[T]) Get(ctx context.Context, key mem.RO) (val T, age time.Duration, ok bool) {
 	for _, c := range cc.cs {
 		val, age, ok = c.Get(ctx, key)
 		if ok {
@@ -31,7 +33,7 @@ func (cc *chainedCache[T]) Get(ctx context.Context, key string) (val T, age time
 	return zero, 0, false
 }
 
-func (cc *chainedCache[T]) Set(ctx context.Context, key string, val T) error {
+func (cc *chainedCache[T]) Set(ctx context.Context, key mem.RO, val T) error {
 	for _, c := range cc.cs {
 		if err := c.Set(ctx, key, val); err != nil {
 			return err

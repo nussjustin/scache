@@ -10,12 +10,13 @@ import (
 	"time"
 
 	"github.com/nussjustin/scache"
+	"go4.org/mem"
 )
 
 func assertCacheGet[T any](tb testing.TB, c scache.Cache[T], ctx context.Context, key string, want T) {
 	tb.Helper()
 
-	got, _, ok := c.Get(ctx, key)
+	got, _, ok := c.Get(ctx, mem.S(key))
 	if !ok {
 		tb.Fatalf("failed to get key %q", key)
 	}
@@ -28,7 +29,7 @@ func assertCacheGet[T any](tb testing.TB, c scache.Cache[T], ctx context.Context
 func assertCacheGetWithAge[T any](tb testing.TB, c scache.Cache[T], ctx context.Context, key string, want T, wantAge time.Duration) {
 	tb.Helper()
 
-	got, gotAge, ok := c.Get(ctx, key)
+	got, gotAge, ok := c.Get(ctx, mem.S(key))
 	if !ok {
 		tb.Fatalf("failed to get key %q", key)
 	}
@@ -45,7 +46,7 @@ func assertCacheGetWithAge[T any](tb testing.TB, c scache.Cache[T], ctx context.
 func assertCacheMiss[T any](tb testing.TB, c scache.Cache[T], ctx context.Context, key string) {
 	tb.Helper()
 
-	if val, _, ok := c.Get(ctx, key); ok {
+	if val, _, ok := c.Get(ctx, mem.S(key)); ok {
 		tb.Fatalf("failed to assert cache miss: got value %v", val)
 	}
 }
@@ -53,7 +54,7 @@ func assertCacheMiss[T any](tb testing.TB, c scache.Cache[T], ctx context.Contex
 func assertCacheSet[T any](tb testing.TB, c scache.Cache[T], ctx context.Context, key string, val T) {
 	tb.Helper()
 
-	if err := c.Set(ctx, key, val); err != nil {
+	if err := c.Set(ctx, mem.S(key), val); err != nil {
 		tb.Fatalf("failed to set key %q to value %v: %s", key, val, err)
 	}
 }
@@ -61,7 +62,7 @@ func assertCacheSet[T any](tb testing.TB, c scache.Cache[T], ctx context.Context
 func assertCacheSetError[T any](tb testing.TB, c scache.Cache[T], ctx context.Context, key string, val T, werr error) {
 	tb.Helper()
 
-	if err := c.Set(ctx, key, val); err == nil {
+	if err := c.Set(ctx, mem.S(key), val); err == nil {
 		tb.Fatalf("failed to assert error for key %q: got value %v", key, val)
 	} else if !errors.Is(err, werr) {
 		tb.Fatalf("failed to assert error for key %q: want %q got %q", key, werr, err)
@@ -156,7 +157,7 @@ func TestShardedCache(t *testing.T) {
 	for i := 0; i < 256; i++ {
 		key := strconv.Itoa(i)
 
-		shard := c.Shard(key)
+		shard := c.Shard(mem.S(key))
 		if shard == nil {
 			t.Fatalf("failed to get shard for key %q", key)
 		}
@@ -169,17 +170,17 @@ func TestShardedCache(t *testing.T) {
 		}
 
 		assertCacheMiss[int](t, c, ctx, key)
-		assertCacheMiss[int](t, c.Shard(key), ctx, key)
+		assertCacheMiss[int](t, c.Shard(mem.S(key)), ctx, key)
 
 		assertCacheSet[int](t, c, ctx, key, i)
 		assertCacheGet[int](t, c, ctx, key, i)
-		assertCacheGet[int](t, c.Shard(key), ctx, key, i)
+		assertCacheGet[int](t, c.Shard(mem.S(key)), ctx, key, i)
 
 		j := i + 1
 
-		assertCacheSet[int](t, c.Shard(key), ctx, key, j)
+		assertCacheSet[int](t, c.Shard(mem.S(key)), ctx, key, j)
 		assertCacheGet[int](t, c, ctx, key, j)
-		assertCacheGet[int](t, c.Shard(key), ctx, key, j)
+		assertCacheGet[int](t, c.Shard(mem.S(key)), ctx, key, j)
 	}
 }
 
@@ -193,7 +194,7 @@ func ExampleNewShardedCache() {
 
 	// later...
 
-	val, age, ok := sc.Get(context.Background(), "hello")
+	val, age, ok := sc.Get(context.Background(), mem.S("hello"))
 	if ok {
 		// do something with the value...
 		_, _ = val, age

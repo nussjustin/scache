@@ -13,16 +13,17 @@ import (
 
 	"github.com/nussjustin/scache"
 	"github.com/nussjustin/scache/lookup"
+	"go4.org/mem"
 )
 
 type getter[T any] interface {
-	Get(ctx context.Context, key string) (val T, age time.Duration, ok bool)
+	Get(ctx context.Context, key mem.RO) (val T, age time.Duration, ok bool)
 }
 
 func assertCacheGet[T any](tb testing.TB, c getter[T], ctx context.Context, key string, want T) {
 	tb.Helper()
 
-	got, _, ok := c.Get(ctx, key)
+	got, _, ok := c.Get(ctx, mem.S(key))
 	if !ok {
 		tb.Fatalf("failed to get key %q", key)
 	}
@@ -35,7 +36,7 @@ func assertCacheGet[T any](tb testing.TB, c getter[T], ctx context.Context, key 
 func assertCacheMiss[T any](tb testing.TB, c getter[T], ctx context.Context, key string) {
 	tb.Helper()
 
-	if val, _, ok := c.Get(ctx, key); ok {
+	if val, _, ok := c.Get(ctx, mem.S(key)); ok {
 		tb.Fatalf("failed to assert cache miss: got value %#v", val)
 	}
 }
@@ -95,27 +96,35 @@ func (ft *fakeTime) NowFunc() time.Time {
 }
 
 type callbackCache[T any] struct {
-	getFunc func(ctx context.Context, key string) (val T, age time.Duration, ok bool)
-	setFunc func(ctx context.Context, key string, val T) error
+	getFunc func(ctx context.Context, key mem.RO) (val T, age time.Duration, ok bool)
+	setFunc func(ctx context.Context, key mem.RO, val T) error
 }
 
-func (c callbackCache[T]) Get(ctx context.Context, key string) (val T, age time.Duration, ok bool) {
+func (c callbackCache[T]) Get(ctx context.Context, key mem.RO) (val T, age time.Duration, ok bool) {
 	return c.getFunc(ctx, key)
 }
 
-func (c callbackCache[T]) Set(ctx context.Context, key string, val T) error {
+func (c callbackCache[T]) Set(ctx context.Context, key mem.RO, val T) error {
 	return c.setFunc(ctx, key, val)
 }
 
-type mapCache[T any] map[string]T
+type mapCache[T any] map[uint64]T
 
-func (m mapCache[T]) Get(_ context.Context, key string) (val T, age time.Duration, ok bool) {
-	val, ok = m[key]
+func newMapCache[T any](m map[string]T) mapCache[T] {
+	c := mapCache[T]{}
+	for k, v := range m {
+		c[mem.S(k).MapHash()] = v
+	}
+	return c
+}
+
+func (m mapCache[T]) Get(_ context.Context, key mem.RO) (val T, age time.Duration, ok bool) {
+	val, ok = m[key.MapHash()]
 	return
 }
 
-func (m mapCache[T]) Set(_ context.Context, key string, val T) error {
-	m[key] = val
+func (m mapCache[T]) Set(_ context.Context, key mem.RO, val T) error {
+	m[key.MapHash()] = val
 	return nil
 }
 
@@ -124,12 +133,12 @@ type statsCache[T any] struct {
 	gets, sets uint64
 }
 
-func (s *statsCache[T]) Get(ctx context.Context, key string) (val T, age time.Duration, ok bool) {
+func (s *statsCache[T]) Get(ctx context.Context, key mem.RO) (val T, age time.Duration, ok bool) {
 	atomic.AddUint64(&s.gets, 1)
 	return s.c.Get(ctx, key)
 }
 
-func (s *statsCache[T]) Set(ctx context.Context, key string, val T) error {
+func (s *statsCache[T]) Set(ctx context.Context, key mem.RO, val T) error {
 	atomic.AddUint64(&s.sets, 1)
 	return s.c.Set(ctx, key, val)
 }
@@ -140,7 +149,7 @@ type slowCache[T any] struct {
 	setDelay time.Duration
 }
 
-func (s *slowCache[T]) Get(ctx context.Context, key string) (val T, age time.Duration, ok bool) {
+func (s *slowCache[T]) Get(ctx context.Context, key mem.RO) (val T, age time.Duration, ok bool) {
 	t := time.NewTimer(s.getDelay)
 	defer t.Stop()
 	select {
@@ -154,7 +163,7 @@ func (s *slowCache[T]) Get(ctx context.Context, key string) (val T, age time.Dur
 	}
 }
 
-func (s *slowCache[T]) Set(ctx context.Context, key string, val T) error {
+func (s *slowCache[T]) Set(ctx context.Context, key mem.RO, val T) error {
 	t := time.NewTimer(s.setDelay)
 	defer t.Stop()
 	select {
@@ -175,17 +184,17 @@ func TestLookupCache(t *testing.T) {
 
 		lru := scache.NewLRU[string](4)
 
-		lookupFunc := func(ctx context.Context, key string) (val string, err error) {
-			if key != "hello" {
-				return "", fmt.Errorf("wrong key: %s", key)
+		lookupFunc := func(ctx context.Context, key mem.RO) (val string, err error) {
+			if !key.EqualString("hello") {
+				return "", fmt.Errorf("wrong key: %s", key.StringCopy())
 			}
-			return key, nil
+			return key.StringCopy(), nil
 		}
 
 		var lastMu sync.Mutex
-		var lastErrKey string
+		var lastErrKey mem.RO
 		var lastErr error
-		onError := func(key string, err error) {
+		onError := func(key mem.RO, err error) {
 			lastMu.Lock()
 			defer lastMu.Unlock()
 			lastErrKey, lastErr = key, err
@@ -197,8 +206,8 @@ func TestLookupCache(t *testing.T) {
 			lastMu.Lock()
 			defer lastMu.Unlock()
 
-			if wantKey != lastErrKey {
-				t.Fatalf("failed to assert key in error handler: want %q, got %q", wantKey, lastErrKey)
+			if !lastErrKey.EqualString(wantKey) {
+				t.Fatalf("failed to assert key in error handler: want %q, got %q", wantKey, lastErrKey.StringCopy())
 			}
 			assertError(t, lastErr, wantErr)
 		}
@@ -232,7 +241,7 @@ func TestLookupCache(t *testing.T) {
 			cancel()
 
 			sc := &slowCache[string]{getDelay: 250 * time.Millisecond}
-			c := lookup.NewCache[string](sc, func(_ context.Context, _ string) (val string, err error) {
+			c := lookup.NewCache[string](sc, func(_ context.Context, _ mem.RO) (val string, err error) {
 				return "world", nil
 			}, &lookup.Opts{Timeout: 150 * time.Millisecond})
 
@@ -245,7 +254,7 @@ func TestLookupCache(t *testing.T) {
 			defer cancel()
 
 			sc := &slowCache[string]{getDelay: 250 * time.Millisecond}
-			c := lookup.NewCache[string](sc, func(_ context.Context, _ string) (val string, err error) {
+			c := lookup.NewCache[string](sc, func(_ context.Context, _ mem.RO) (val string, err error) {
 				return "world", nil
 			}, &lookup.Opts{Timeout: 150 * time.Millisecond})
 
@@ -263,7 +272,7 @@ func TestLookupCache(t *testing.T) {
 		var lookupDelayMu sync.Mutex
 		lookupDelay := 150 * time.Millisecond
 
-		lookupFunc := func(ctx context.Context, key string) (val string, err error) {
+		lookupFunc := func(ctx context.Context, key mem.RO) (val string, err error) {
 			lookupDelayMu.Lock()
 			delay := lookupDelay
 			lookupDelayMu.Unlock()
@@ -273,7 +282,7 @@ func TestLookupCache(t *testing.T) {
 				return "", ctx.Err()
 			case <-time.After(delay):
 			}
-			return strings.ToUpper(key), nil
+			return strings.ToUpper(key.StringCopy()), nil
 		}
 
 		c := lookup.NewCache[string](lru, lookupFunc, &lookup.Opts{Timeout: 250 * time.Millisecond})
@@ -306,7 +315,7 @@ func TestLookupCache(t *testing.T) {
 
 		lru := scache.NewLRU[string](4)
 
-		lookupFunc := func(ctx context.Context, key string) (val string, err error) {
+		lookupFunc := func(ctx context.Context, key mem.RO) (val string, err error) {
 			return "world", lookup.ErrSkip
 		}
 
@@ -321,9 +330,9 @@ func TestLookupCache(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		stats := &statsCache[string]{c: mapCache[string]{"hello": "world"}}
+		stats := &statsCache[string]{c: newMapCache[string](map[string]string{"hello": "world"})}
 
-		c := lookup.NewCache[string](stats, func(ctx context.Context, key string) (val string, err error) {
+		c := lookup.NewCache[string](stats, func(ctx context.Context, key mem.RO) (val string, err error) {
 			panic("lookup function called")
 		}, nil)
 
@@ -336,25 +345,25 @@ func TestLookupCache(t *testing.T) {
 		defer cancel()
 
 		cc := callbackCache[string]{
-			getFunc: func(context.Context, string) (val string, age time.Duration, ok bool) {
+			getFunc: func(context.Context, mem.RO) (val string, age time.Duration, ok bool) {
 				return
 			},
-			setFunc: func(context.Context, string, string) error {
+			setFunc: func(context.Context, mem.RO, string) error {
 				panic("PANIC WHILE SET'TING VALUE")
 			},
 		}
 
-		lookupFunc := func(ctx context.Context, key string) (val string, err error) {
-			if key == "Hello" {
+		lookupFunc := func(ctx context.Context, key mem.RO) (val string, err error) {
+			if key.EqualString("Hello") {
 				panic("INVALID KEY")
 			}
-			return strings.ToUpper(key), nil
+			return strings.ToUpper(key.StringCopy()), nil
 		}
 
 		var lastMu sync.Mutex
-		var lastPanicKey string
+		var lastPanicKey mem.RO
 		var lastPanic error
-		onPanic := func(key string, v interface{}) {
+		onPanic := func(key mem.RO, v interface{}) {
 			lastMu.Lock()
 			defer lastMu.Unlock()
 			lastPanicKey, lastPanic = key, errors.New(v.(string))
@@ -366,8 +375,8 @@ func TestLookupCache(t *testing.T) {
 			lastMu.Lock()
 			defer lastMu.Unlock()
 
-			if wantKey != lastPanicKey {
-				t.Fatalf("failed to assert key in panic handler: want %q, got %q", wantKey, lastPanicKey)
+			if !lastPanicKey.EqualString(wantKey) {
+				t.Fatalf("failed to assert key in panic handler: want %q, got %q", wantKey, lastPanicKey.StringCopy())
 			}
 			assertError(t, lastPanic, wantPanic)
 		}
@@ -400,7 +409,7 @@ func TestLookupCache(t *testing.T) {
 
 		c := lookup.NewCache[int](
 			lru,
-			func(_ context.Context, key string) (val int, err error) {
+			func(_ context.Context, key mem.RO) (val int, err error) {
 				return int(atomic.AddUint64(&lookups, 1)), nil
 			},
 			&lookup.Opts{RefreshAfter: 1 * time.Second})
@@ -430,13 +439,13 @@ func TestLookupCache(t *testing.T) {
 		var lookups uint64
 		c := lookup.NewCache[int](
 			stats,
-			func(_ context.Context, key string) (val int, err error) {
+			func(_ context.Context, key mem.RO) (val int, err error) {
 				atomic.AddUint64(&lookups, 1)
 				return 0, errors.New("some error")
 			},
 			&lookup.Opts{RefreshAfter: 1 * time.Second})
 
-		if err := lru.Set(ctx, "hello", 1); err != nil {
+		if err := lru.Set(ctx, mem.S("hello"), 1); err != nil {
 			t.Fatalf("failed to add value to cache: %s", err)
 		}
 
@@ -473,7 +482,7 @@ func TestLookupCache(t *testing.T) {
 
 		c := lookup.NewCache[int](
 			lru,
-			func(_ context.Context, key string) (val int, err error) {
+			func(_ context.Context, key mem.RO) (val int, err error) {
 				return int(atomic.AddUint64(&lookups, 1)), nil
 			},
 			&lookup.Opts{
@@ -508,7 +517,7 @@ func TestLookupCache(t *testing.T) {
 
 		c := lookup.NewCache[int](
 			lru,
-			func(_ context.Context, key string) (val int, err error) {
+			func(_ context.Context, key mem.RO) (val int, err error) {
 				return int(atomic.AddUint64(&lookups, 1)), nil
 			},
 			&lookup.Opts{
@@ -533,12 +542,12 @@ func TestLookupCache(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		lookupFunc := func(_ context.Context, key string) (val string, err error) {
-			return strings.ToUpper(key), nil
+		lookupFunc := func(_ context.Context, key mem.RO) (val string, err error) {
+			return strings.ToUpper(key.StringCopy()), nil
 		}
 
 		var lastErr error
-		var lastErrKey string
+		var lastErrKey mem.RO
 		lastErrC := make(chan struct{}, 1)
 
 		assertSetError := func(wantKey, wantErr string) {
@@ -550,8 +559,8 @@ func TestLookupCache(t *testing.T) {
 				t.Fatalf("timeout waiting for error handler to be called")
 			}
 
-			if wantKey != lastErrKey {
-				t.Fatalf("failed to assert key in error handler: want %q, got %q", wantKey, lastErrKey)
+			if !lastErrKey.EqualString(wantKey) {
+				t.Fatalf("failed to assert key in error handler: want %q, got %q", wantKey, lastErrKey.StringCopy())
 			}
 			assertError(t, lastErr, wantErr)
 		}
@@ -561,7 +570,7 @@ func TestLookupCache(t *testing.T) {
 			sc,
 			lookupFunc,
 			&lookup.Opts{
-				SetErrorHandler: func(key string, err error) {
+				SetErrorHandler: func(key mem.RO, err error) {
 					lastErrKey, lastErr = key, err
 					lastErrC <- struct{}{}
 				},
@@ -583,8 +592,8 @@ func TestLookupCache(t *testing.T) {
 
 		lru := scache.NewLRU[string](4)
 
-		lookupFunc := func(ctx context.Context, key string) (val string, err error) {
-			return strings.ToUpper(key), nil
+		lookupFunc := func(ctx context.Context, key mem.RO) (val string, err error) {
+			return strings.ToUpper(key.StringCopy()), nil
 		}
 
 		c := lookup.NewCache[string](lru, lookupFunc, nil)
@@ -622,12 +631,12 @@ func TestLookupCacheConcurrency(t *testing.T) {
 		"key4",
 	}
 
-	lookupFunc := func(_ context.Context, key string) (val string, err error) {
+	lookupFunc := func(_ context.Context, key mem.RO) (val string, err error) {
 		time.Sleep(25 * time.Millisecond)
 		callsMu.Lock()
-		calls[key]++
+		calls[key.StringCopy()]++
 		callsMu.Unlock()
-		return key, nil
+		return key.StringCopy(), nil
 	}
 
 	c := lookup.NewCache[string](scache.NewLRU[string](4), lookupFunc, nil)
@@ -639,7 +648,7 @@ func TestLookupCacheConcurrency(t *testing.T) {
 				wg.Add(1)
 				go func(key string) {
 					defer wg.Done()
-					_, _, _ = c.Get(ctx, key)
+					_, _, _ = c.Get(ctx, mem.S(key))
 				}(key)
 			}
 		}
@@ -665,13 +674,13 @@ func TestLookupCacheConcurrency(t *testing.T) {
 }
 
 func ExampleCache() {
-	c := lookup.NewCache[string](scache.NewLRU[string](32), func(ctx context.Context, key string) (val string, err error) {
-		return strings.ToUpper(key), nil
+	c := lookup.NewCache[string](scache.NewLRU[string](32), func(ctx context.Context, key mem.RO) (val string, err error) {
+		return strings.ToUpper(key.StringCopy()), nil
 	}, nil)
 
 	// later...
 
-	val, _, _ := c.Get(context.Background(), "hello")
+	val, _, _ := c.Get(context.Background(), mem.S("hello"))
 	if val != "HELLO" {
 		panic("something went wrong... PANIC")
 	}
