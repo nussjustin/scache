@@ -230,21 +230,27 @@ func (s Stats) add(so Stats) Stats {
 type lookupGroup[T any] struct {
 	cache *Cache[T]
 
-	mu      sync.Mutex
-	entries map[uint64]*lookupGroupEntry[T]
-	stats   Stats
+	mu       sync.Mutex
+	entries  map[uint64]*lookupGroupEntry[T]
+	freeList []lookupGroupEntry[T]
+	stats    Stats
 }
 
 func (lg *lookupGroup[T]) add(hash uint64, key mem.RO) *lookupGroupEntry[T] {
-	lge := &lookupGroupEntry[T]{
-		cache: lg.cache,
-
+	if len(lg.freeList) == 0 {
+		// reduce allocation overhead by allocating in batches
+		lg.freeList = make([]lookupGroupEntry[T], 8)
+	}
+	lge := &lg.freeList[len(lg.freeList)-1]
+	*lge = lookupGroupEntry[T]{
 		group: lg,
-		hash:  hash,
-		key:   key,
+
+		hash: hash,
+		key:  key,
 
 		done: make(chan struct{}),
 	}
+	lg.freeList = lg.freeList[:len(lg.freeList)-1]
 	lg.entries[hash] = lge
 	return lge
 }
@@ -272,46 +278,48 @@ func (lg *lookupGroup[T]) remove(sge *lookupGroupEntry[T]) {
 }
 
 type lookupGroupEntry[T any] struct {
-	cache *Cache[T]
 	group *lookupGroup[T]
 	hash  uint64
 	key   mem.RO
 
-	stats Stats
 	done  chan struct{}
+	stats Stats
 
-	val T
-	age time.Duration
-	ok  bool
+	age    time.Duration
+	closed bool
+	ok     bool
+	val    T
+}
+
+func (lge *lookupGroupEntry[T]) close() {
+	if lge.closed {
+		return
+	}
+	close(lge.done)
+	lge.closed = true
 }
 
 func (lge *lookupGroupEntry[T]) closeAndRemove() {
-	select {
-	case <-lge.done:
-	default:
-		// only happens when we got an error or a panic
-		close(lge.done)
-	}
-
+	lge.close()
 	lge.group.remove(lge)
 }
 
 func (lge *lookupGroupEntry[T]) handleErr(err error) {
 	lge.stats.Errors++
-	if lge.cache.opts.ErrorHandler != nil {
-		lge.cache.opts.ErrorHandler(lge.key, err)
+	if lge.group.cache.opts.ErrorHandler != nil {
+		lge.group.cache.opts.ErrorHandler(lge.key, err)
 	}
 }
 
 func (lge *lookupGroupEntry[T]) handlePanic(v interface{}) {
 	lge.stats.Panics++
-	if lge.cache.opts.PanicHandler != nil {
-		lge.cache.opts.PanicHandler(lge.key, v)
+	if lge.group.cache.opts.PanicHandler != nil {
+		lge.group.cache.opts.PanicHandler(lge.key, v)
 	}
 }
 
 func (lge *lookupGroupEntry[T]) fetchCached(ctx context.Context) error {
-	if lge.val, lge.age, lge.ok = lge.cache.c.Get(ctx, lge.key); lge.ok {
+	if lge.val, lge.age, lge.ok = lge.group.cache.c.Get(ctx, lge.key); lge.ok {
 		return nil
 	}
 	return ctx.Err()
@@ -320,7 +328,7 @@ func (lge *lookupGroupEntry[T]) fetchCached(ctx context.Context) error {
 func (lge *lookupGroupEntry[T]) lookupAndCache(baseCtx, ctx context.Context) {
 	lge.stats.Lookups++
 
-	val, err := lge.cache.f(ctx, lge.key)
+	val, err := lge.group.cache.f(ctx, lge.key)
 	if err != nil && !errors.Is(err, ErrSkip) {
 		lge.handleErr(err)
 		return
@@ -334,11 +342,11 @@ func (lge *lookupGroupEntry[T]) lookupAndCache(baseCtx, ctx context.Context) {
 		lge.val, lge.age, lge.ok = val, 0, true
 
 		// close manually so that waiters can return without having to wait for the cache to be updated
-		close(lge.done)
+		lge.close()
 	}
 
 	if lge.ok && err == nil {
-		lge.cache.set(baseCtx, lge.key, val, &lge.stats)
+		lge.group.cache.set(baseCtx, lge.key, val, &lge.stats)
 	}
 }
 
@@ -351,7 +359,7 @@ func (lge *lookupGroupEntry[T]) run(baseCtx context.Context) {
 		lge.closeAndRemove()
 	}()
 
-	ctx, cancel := context.WithTimeout(baseCtx, lge.cache.opts.Timeout)
+	ctx, cancel := context.WithTimeout(baseCtx, lge.group.cache.opts.Timeout)
 	defer cancel()
 
 	if err := lge.fetchCached(ctx); err != nil {
@@ -364,14 +372,14 @@ func (lge *lookupGroupEntry[T]) run(baseCtx context.Context) {
 	} else {
 		lge.stats.Hits++
 
-		if !lge.cache.opts.shouldRefresh(lge.age) {
+		if !lge.group.cache.opts.shouldRefresh(lge.age) {
 			return
 		}
 
 		lge.stats.Refreshes++
 
-		if lge.cache.opts.BackgroundRefresh {
-			close(lge.done)
+		if lge.group.cache.opts.BackgroundRefresh {
+			lge.close()
 		}
 	}
 
