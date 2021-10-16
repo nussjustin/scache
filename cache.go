@@ -26,7 +26,7 @@ type Cache[T any] interface {
 // Noop implements an always empty cache.
 type Noop[T any] struct{}
 
-var _ Cache[interface{}] = &Noop[interface{}]{}
+var _ Cache[interface{}] = Noop[interface{}]{}
 
 // Get implements the Cache interface.
 func (n Noop[T]) Get(context.Context, mem.RO) (val T, age time.Duration, ok bool) {
