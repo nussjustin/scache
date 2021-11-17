@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nussjustin/scache"
@@ -87,10 +88,7 @@ func (l *Cache[T]) set(ctx context.Context, key mem.RO, val T, stats *Stats) {
 		}
 	}()
 
-	setCtx, cancel := context.WithTimeout(ctx, l.opts.SetTimeout)
-	defer cancel()
-
-	if err := l.c.Set(setCtx, key, val); err != nil {
+	if err := l.c.Set(ctx, key, val); err != nil {
 		stats.Errors++
 		if l.opts.SetErrorHandler != nil {
 			l.opts.SetErrorHandler(key, err)
@@ -264,7 +262,7 @@ func (lg *lookupGroup[T]) get(hash uint64, key mem.RO) *lookupGroupEntry[T] {
 	lg.mu.Unlock()
 
 	if !ok {
-		go sge.run(context.Background())
+		go sge.run()
 	}
 
 	return sge
@@ -284,6 +282,9 @@ type lookupGroupEntry[T any] struct {
 
 	done  chan struct{}
 	stats Stats
+
+	fetchCtx lazyTimeoutContext
+	setCtx   lazyTimeoutContext
 
 	age    time.Duration
 	closed bool
@@ -325,7 +326,7 @@ func (lge *lookupGroupEntry[T]) fetchCached(ctx context.Context) error {
 	return ctx.Err()
 }
 
-func (lge *lookupGroupEntry[T]) lookupAndCache(baseCtx, ctx context.Context) {
+func (lge *lookupGroupEntry[T]) lookupAndCache(ctx context.Context) {
 	lge.stats.Lookups++
 
 	val, err := lge.group.cache.f(ctx, lge.key)
@@ -346,11 +347,15 @@ func (lge *lookupGroupEntry[T]) lookupAndCache(baseCtx, ctx context.Context) {
 	}
 
 	if lge.ok && err == nil {
-		lge.group.cache.set(baseCtx, lge.key, val, &lge.stats)
+		setCtx := &lge.setCtx
+		setCtx.t = time.Now().Add(lge.group.cache.opts.SetTimeout)
+		defer setCtx.cancel()
+
+		lge.group.cache.set(setCtx, lge.key, val, &lge.stats)
 	}
 }
 
-func (lge *lookupGroupEntry[T]) run(baseCtx context.Context) {
+func (lge *lookupGroupEntry[T]) run() {
 	defer func() {
 		if v := recover(); v != nil {
 			lge.handlePanic(v)
@@ -359,8 +364,9 @@ func (lge *lookupGroupEntry[T]) run(baseCtx context.Context) {
 		lge.closeAndRemove()
 	}()
 
-	ctx, cancel := context.WithTimeout(baseCtx, lge.group.cache.opts.Timeout)
-	defer cancel()
+	ctx := &lge.fetchCtx
+	ctx.t = time.Now().Add(lge.group.cache.opts.Timeout)
+	defer ctx.cancel()
 
 	if err := lge.fetchCached(ctx); err != nil {
 		lge.handleErr(err)
@@ -383,7 +389,7 @@ func (lge *lookupGroupEntry[T]) run(baseCtx context.Context) {
 		}
 	}
 
-	lge.lookupAndCache(baseCtx, ctx)
+	lge.lookupAndCache(ctx)
 }
 
 func (lge *lookupGroupEntry[T]) wait(ctx context.Context) (val T, age time.Duration, ok bool) {
@@ -393,4 +399,93 @@ func (lge *lookupGroupEntry[T]) wait(ctx context.Context) (val T, age time.Durat
 	case <-lge.done:
 		return lge.val, lge.age, lge.ok
 	}
+}
+
+type lazyTimeoutContext struct {
+	t     time.Time
+	mu    sync.Mutex
+	done  atomic.Value // of chan struct{}
+	err   error
+	timer *time.Timer
+}
+
+var closedChan = func() chan struct{} {
+	c := make(chan struct{})
+	close(c)
+	return c
+}()
+
+func (l *lazyTimeoutContext) cancel() {
+	l.cancelWithError(context.Canceled)
+}
+
+func (l *lazyTimeoutContext) cancelWithError(err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	l.cancelWithErrorLocked(err)
+}
+
+func (l *lazyTimeoutContext) cancelWithErrorLocked(err error) {
+	if l.err != nil {
+		return
+	}
+
+	done, _ := l.done.Load().(chan struct{})
+
+	if done != nil {
+		close(done)
+	} else {
+		l.done.Store(closedChan)
+	}
+
+	l.err = err
+
+	if l.timer != nil {
+		l.timer.Stop()
+		l.timer = nil
+	}
+}
+
+func (l *lazyTimeoutContext) Deadline() (deadline time.Time, ok bool) {
+	return l.t, true
+}
+
+func (l *lazyTimeoutContext) Done() <-chan struct{} {
+	done, _ := l.done.Load().(chan struct{})
+	if done != nil {
+		return done
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	done, _ = l.done.Load().(chan struct{})
+	if done != nil {
+		return done
+	}
+
+	d := time.Until(l.t)
+
+	if d <= 0 {
+		l.cancelWithErrorLocked(context.DeadlineExceeded)
+		return closedChan
+	}
+
+	done = make(chan struct{})
+
+	l.done.Store(done)
+	l.timer = time.AfterFunc(d, func() { l.cancelWithError(context.DeadlineExceeded) })
+
+	return done
+}
+
+func (l *lazyTimeoutContext) Err() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.err
+}
+
+func (l *lazyTimeoutContext) Value(interface{}) interface{} {
+	return nil
 }
