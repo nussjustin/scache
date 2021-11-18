@@ -230,17 +230,11 @@ type lookupGroup[T any] struct {
 
 	mu       sync.Mutex
 	entries  map[uint64]*lookupGroupEntry[T]
-	freeList []lookupGroupEntry[T]
 	stats    Stats
 }
 
 func (lg *lookupGroup[T]) add(hash uint64, key mem.RO) *lookupGroupEntry[T] {
-	if len(lg.freeList) == 0 {
-		// reduce allocation overhead by allocating in batches
-		lg.freeList = make([]lookupGroupEntry[T], 8)
-	}
-	lge := &lg.freeList[len(lg.freeList)-1]
-	*lge = lookupGroupEntry[T]{
+	lge := &lookupGroupEntry[T]{
 		group: lg,
 
 		hash: hash,
@@ -248,7 +242,6 @@ func (lg *lookupGroup[T]) add(hash uint64, key mem.RO) *lookupGroupEntry[T] {
 
 		done: make(chan struct{}),
 	}
-	lg.freeList = lg.freeList[:len(lg.freeList)-1]
 	lg.entries[hash] = lge
 	return lge
 }
