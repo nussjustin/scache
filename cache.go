@@ -8,8 +8,6 @@ import (
 	"go4.org/mem"
 )
 
-var v interface{} = mem.RO{}
-
 // Cache defines methods for setting and retrieving values in a Cache.
 type Cache[T any] interface {
 	// Get retrieves the cached value for the given key.
