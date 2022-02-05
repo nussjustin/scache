@@ -196,55 +196,70 @@ func TestLRU_Remove(t *testing.T) {
 }
 
 func BenchmarkLRU(b *testing.B) {
-	b.Run("Get", func(b *testing.B) {
+	const m = 1000
+
+	keys := make([]string, m)
+	for i := range keys {
+		keys[i] = strconv.Itoa(i)
+	}
+
+	b.Run("Get-1000", func(b *testing.B) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		keys := [...]string{
-			"key1",
-			"key2",
-			"key3",
-			"key4",
-		}
-
-		c := scache.NewLRU[string](4)
+		c := scache.NewLRU[string](len(keys))
 		for _, key := range keys {
 			assertCacheSet[string](b, c, ctx, key, key)
 		}
 
-		for i := 0; i < b.N; i++ {
-			key := keys[i%len(keys)]
+		b.ResetTimer()
 
-			if _, _, ok := c.Get(ctx, mem.S(key)); !ok {
-				b.Fatalf("failed to get key %q", key)
+		for i := 0; i < b.N; i++ {
+			for _, key := range keys {
+				if _, _, ok := c.Get(ctx, mem.S(key)); !ok {
+					b.Fatalf("failed to get key %q", key)
+				}
 			}
 		}
 	})
 
-	b.Run("Set", func(b *testing.B) {
+	b.Run("Set-1000", func(b *testing.B) {
 		b.Run("Add", func(b *testing.B) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
-			keys := [...]string{
-				"key1",
-				"key2",
-				"key3",
-				"key4",
-			}
-
-			c := scache.NewLRU[string](len(keys) / 2)
-			for _, key := range keys {
-				assertCacheSet[string](b, c, ctx, key, key)
-			}
-
 			b.ResetTimer()
 
 			for i := 0; i < b.N; i++ {
-				key := keys[i%len(keys)]
+				c := scache.NewLRU[string](len(keys))
 
-				if err := c.Set(ctx, mem.S(key), key); err != nil {
-					b.Fatalf("failed to set key %q to value %q: %s", key, key, err)
+				for _, key := range keys {
+					if err := c.Set(ctx, mem.S(key), key); err != nil {
+						b.Fatalf("failed to set key %q to value %q: %s", key, key, err)
+					}
+				}
+			}
+		})
+
+		b.Run("Mixed", func(b *testing.B) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			for i := 0; i < b.N; i++ {
+				c := scache.NewLRU[string](len(keys))
+
+				b.StopTimer()
+				for j, key := range keys {
+					if j%2 == 0 {
+						assertCacheSet[string](b, c, ctx, key, key)
+					}
+				}
+				b.StartTimer()
+
+				for _, key := range keys {
+					if err := c.Set(ctx, mem.S(key), key); err != nil {
+						b.Fatalf("failed to set key %q to value %q: %s", key, key, err)
+					}
 				}
 			}
 		})
@@ -253,13 +268,17 @@ func BenchmarkLRU(b *testing.B) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
-			const key = "key"
-
 			c := scache.NewLRU[string](b.N)
 
+			for _, key := range keys {
+				assertCacheSet[string](b, c, ctx, key, key)
+			}
+
 			for i := 0; i < b.N; i++ {
-				if err := c.Set(ctx, mem.S(key), key); err != nil {
-					b.Fatalf("failed to set key %q to value %q: %s", key, key, err)
+				for _, key := range keys {
+					if err := c.Set(ctx, mem.S(key), key); err != nil {
+						b.Fatalf("failed to set key %q to value %q: %s", key, key, err)
+					}
 				}
 			}
 		})

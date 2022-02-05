@@ -23,7 +23,10 @@ type LRU[T any] struct {
 	entries    map[uint64]*lruItem[T]
 	head, tail *lruItem[T]
 	free       *lruItem[T]
+	freeCount  int
 }
+
+const lruFreeListLimit = 32
 
 type lruItem[T any] struct {
 	prev, next *lruItem[T]
@@ -59,12 +62,24 @@ func NewLRUWithTTL[T any](size int, ttl time.Duration) *LRU[T] {
 }
 
 func (l *LRU[T]) addLocked(key mem.RO, val T, added time.Time) {
-	var item *lruItem[T]
-	if l.free != nil {
-		item, l.free = l.free, nil
-		item.key, item.keyHash, item.val, item.added, item.ttl = key, key.MapHash(), val, added, l.ttl
-	} else {
-		item = &lruItem[T]{key: key, keyHash: key.MapHash(), val: val, added: added, ttl: l.ttl}
+	if l.free == nil {
+		free := make([]lruItem[T], lruFreeListLimit/2)
+		for i := range free {
+			free[i].next = l.free
+			l.free = &free[i]
+		}
+		l.freeCount = len(free)
+	}
+
+	item := l.free
+	l.free = item.next
+
+	*item = lruItem[T]{
+		key:     key,
+		keyHash: key.MapHash(),
+		val:     val,
+		added:   added,
+		ttl:     l.ttl,
 	}
 
 	item.next = l.head
@@ -81,9 +96,11 @@ func (l *LRU[T]) deleteLocked(item *lruItem[T]) {
 	delete(l.entries, item.keyHash)
 	l.unmountLocked(item)
 
-	var zero T
-	item.key, item.keyHash, item.val = mem.RO{}, 0, zero
-	l.free = item
+	if l.freeCount < lruFreeListLimit {
+		*item = lruItem[T]{next: l.free}
+		l.free = item
+		l.freeCount++
+	}
 }
 
 func (l *LRU[T]) moveToFrontLocked(item *lruItem[T]) {
