@@ -57,8 +57,7 @@ const minShards = 1
 //
 // A basic factory could look like this:
 //
-//     func(int) Cache { return NewLRU(32) }
-//
+//	func(int) Cache { return NewLRU(32) }
 func NewShardedCache[T any](shards int, factory func(shard int) Cache[T]) (*ShardedCache[T], error) {
 	if shards < minShards {
 		return nil, ErrInvalidShardsCount
@@ -76,8 +75,7 @@ func NewShardedCache[T any](shards int, factory func(shard int) Cache[T]) (*Shar
 //
 // This is a shorthand for calling
 //
-//     s.Shard(key).Get(ctx, key)
-//
+//	s.Shard(key).Get(ctx, key)
 func (s *ShardedCache[T]) Get(ctx context.Context, key mem.RO) (val T, age time.Duration, ok bool) {
 	return s.Shard(key).Get(ctx, key)
 }
@@ -86,8 +84,7 @@ func (s *ShardedCache[T]) Get(ctx context.Context, key mem.RO) (val T, age time.
 //
 // This is a shorthand for calling
 //
-//     s.Shard(key).Set(ctx, key, val)
-//
+//	s.Shard(key).Set(ctx, key, val)
 func (s *ShardedCache[T]) Set(ctx context.Context, key mem.RO, val T) error {
 	return s.Shard(key).Set(ctx, key, val)
 }

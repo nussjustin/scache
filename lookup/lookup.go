@@ -48,21 +48,25 @@ func NewCache[T any](c scache.Cache[T], f Func[T], opts *Opts) *Cache[T] {
 		opts.Timeout = defaultTimeout
 	}
 
-	l := &Cache[T]{
+	const groups = 256
+
+	cache := &Cache[T]{
 		opts: *opts,
 
 		c: c,
 		f: f,
 
-		groups: make([]lookupGroup[T], 256),
+		groups: make([]lookupGroup[T], groups),
 	}
-	for i := range l.groups {
-		l.groups[i] = lookupGroup[T]{
-			cache:   l,
+
+	for i := range cache.groups {
+		cache.groups[i] = lookupGroup[T]{
+			cache:   cache,
 			entries: make(map[uint64]*lookupGroupEntry[T]),
 		}
 	}
-	return l
+
+	return cache
 }
 
 // Get returns the value for the given key.
@@ -98,14 +102,14 @@ func (l *Cache[T]) set(ctx context.Context, key mem.RO, val T, stats *Stats) {
 
 // Running returns the number of running cache accesses and lookups.
 func (l *Cache[T]) Running() int {
-	var n int
+	var total int
 	for i := range l.groups {
 		s := &l.groups[i]
 		s.mu.Lock()
-		n += len(s.entries)
+		total += len(s.entries)
 		s.mu.Unlock()
 	}
-	return n
+	return total
 }
 
 // Stats returns statistics about all completed lookups and cache accesses.
@@ -125,9 +129,7 @@ func (l *Cache[T]) Stats() Stats {
 // If err is ErrSkip the result will not be cached.
 type Func[T any] func(ctx context.Context, key mem.RO) (val T, err error)
 
-var (
-	ErrSkip = errors.New("skipping result")
-)
+var ErrSkip = errors.New("skipping result")
 
 // Opts can be used to configure or change the behaviour of a Cache.
 type Opts struct {
@@ -228,9 +230,9 @@ func (s Stats) add(so Stats) Stats {
 type lookupGroup[T any] struct {
 	cache *Cache[T]
 
-	mu       sync.Mutex
-	entries  map[uint64]*lookupGroupEntry[T]
-	stats    Stats
+	mu      sync.Mutex
+	entries map[uint64]*lookupGroupEntry[T]
+	stats   Stats
 }
 
 func (lg *lookupGroup[T]) add(hash uint64, key mem.RO) *lookupGroupEntry[T] {
@@ -341,7 +343,7 @@ func (lge *lookupGroupEntry[T]) lookupAndCache(ctx context.Context) {
 
 	if lge.ok && err == nil {
 		setCtx := &lge.setCtx
-		setCtx.t = time.Now().Add(lge.group.cache.opts.SetTimeout)
+		setCtx.deadline = time.Now().Add(lge.group.cache.opts.SetTimeout)
 		defer setCtx.cancel()
 
 		lge.group.cache.set(setCtx, lge.key, val, &lge.stats)
@@ -358,7 +360,7 @@ func (lge *lookupGroupEntry[T]) run() {
 	}()
 
 	ctx := &lge.fetchCtx
-	ctx.t = time.Now().Add(lge.group.cache.opts.Timeout)
+	ctx.deadline = time.Now().Add(lge.group.cache.opts.Timeout)
 	defer ctx.cancel()
 
 	if err := lge.fetchCached(ctx); err != nil {
@@ -395,7 +397,8 @@ func (lge *lookupGroupEntry[T]) wait(ctx context.Context) (val T, age time.Durat
 }
 
 type lazyTimeoutContext struct {
-	t     time.Time
+	deadline time.Time
+
 	mu    sync.Mutex
 	done  atomic.Value // of chan struct{}
 	err   error
@@ -440,8 +443,8 @@ func (l *lazyTimeoutContext) cancelWithErrorLocked(err error) {
 	}
 }
 
-func (l *lazyTimeoutContext) Deadline() (deadline time.Time, ok bool) {
-	return l.t, true
+func (l *lazyTimeoutContext) Deadline() (time.Time, bool) {
+	return l.deadline, true
 }
 
 func (l *lazyTimeoutContext) Done() <-chan struct{} {
@@ -458,9 +461,9 @@ func (l *lazyTimeoutContext) Done() <-chan struct{} {
 		return done
 	}
 
-	d := time.Until(l.t)
+	timeLeft := time.Until(l.deadline)
 
-	if d <= 0 {
+	if timeLeft <= 0 {
 		l.cancelWithErrorLocked(context.DeadlineExceeded)
 		return closedChan
 	}
@@ -468,7 +471,7 @@ func (l *lazyTimeoutContext) Done() <-chan struct{} {
 	done = make(chan struct{})
 
 	l.done.Store(done)
-	l.timer = time.AfterFunc(d, func() { l.cancelWithError(context.DeadlineExceeded) })
+	l.timer = time.AfterFunc(timeLeft, func() { l.cancelWithError(context.DeadlineExceeded) })
 
 	return done
 }

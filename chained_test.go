@@ -9,8 +9,7 @@ import (
 	"go4.org/mem"
 )
 
-type contextCacheCache[T any] struct {
-}
+type contextCacheCache[T any] struct{}
 
 func (c contextCacheCache[T]) Get(context.Context, mem.RO) (val T, age time.Duration, ok bool) {
 	return
