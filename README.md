@@ -28,7 +28,7 @@ if err := lru.Set(ctx, mem.S(strconv.Itoa(user.ID)), user); err != nil {
 
 Retrieving a value from the cache
 
-```
+```go
 userID := getUserID(ctx)
 
 // Ignore age of cache entry
