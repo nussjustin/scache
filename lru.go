@@ -64,11 +64,12 @@ func NewLRUWithTTL[T any](size int, ttl time.Duration) *LRU[T] {
 func (l *LRU[T]) addLocked(key mem.RO, val T, added time.Time) {
 	if l.free == nil {
 		free := make([]lruItem[T], lruFreeListLimit/2)
-		for i := range free {
-			free[i].next = l.free
-			l.free = &free[i]
+		freeCount := len(free)
+		for i := range free[:freeCount-1] {
+			free[i].next = &free[i+1]
 		}
-		l.freeCount = len(free)
+		l.free = &free[0]
+		l.freeCount = freeCount
 	}
 
 	item := l.free
