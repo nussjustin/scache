@@ -2,25 +2,26 @@ package lookup
 
 import (
 	"context"
+	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nussjustin/scache"
-	"github.com/nussjustin/scache/internal/sharding"
+	"go4.org/mem"
 )
 
 // Cache implements a cache wrapper where on each cache miss the value will be looked
 // up via a cache-level lookup function and cached in the underlying cache for further calls.
 //
 // Cache explicitly does not implement the Cache interface.
-type Cache struct {
+type Cache[T any] struct {
 	opts Opts
 
-	c scache.Cache
-	f Func
+	c scache.Cache[T]
+	f Func[T]
 
-	hasher sharding.Hasher
-	groups []lookupGroup
+	groups []lookupGroup[T]
 }
 
 const defaultTimeout = 250 * time.Millisecond
@@ -34,10 +35,7 @@ const defaultTimeout = 250 * time.Millisecond
 // Setting opts to nil is equivalent to passing a pointer to a zero Opts value.
 //
 // Any change to opts which after NewCache returns will be ignored.
-//
-// Note: By default nil values will not be cached. Caching of nil values can
-// be enabled by passing custom opts and setting CacheNil to true.
-func NewCache(c scache.Cache, f Func, opts *Opts) *Cache {
+func NewCache[T any](c scache.Cache[T], f Func[T], opts *Opts) *Cache[T] {
 	if opts == nil {
 		opts = &Opts{}
 	}
@@ -50,22 +48,25 @@ func NewCache(c scache.Cache, f Func, opts *Opts) *Cache {
 		opts.Timeout = defaultTimeout
 	}
 
-	l := &Cache{
+	const groups = 256
+
+	cache := &Cache[T]{
 		opts: *opts,
 
 		c: c,
 		f: f,
 
-		hasher: sharding.NewHasher(),
-		groups: make([]lookupGroup, 256),
+		groups: make([]lookupGroup[T], groups),
 	}
-	for i := range l.groups {
-		l.groups[i] = lookupGroup{
-			cache:   l,
-			entries: make(map[uint64]*lookupGroupEntry),
+
+	for i := range cache.groups {
+		cache.groups[i] = lookupGroup[T]{
+			cache:   cache,
+			entries: make(map[uint64]*lookupGroupEntry[T]),
 		}
 	}
-	return l
+
+	return cache
 }
 
 // Get returns the value for the given key.
@@ -75,13 +76,13 @@ func NewCache(c scache.Cache, f Func, opts *Opts) *Cache {
 // specified in NewCache.
 //
 // When the lookup of a stale value fails, Get will continue to return the old value.
-func (l *Cache) Get(ctx context.Context, key string) (val interface{}, age time.Duration, ok bool) {
-	hash := l.hasher.Hash(key)
+func (l *Cache[T]) Get(ctx context.Context, key mem.RO) (val T, age time.Duration, ok bool) {
+	hash := key.MapHash()
 	idx := hash & uint64(len(l.groups)-1)
 	return l.groups[idx].get(hash, key).wait(ctx)
 }
 
-func (l *Cache) set(ctx context.Context, key string, val interface{}, stats *Stats) {
+func (l *Cache[T]) set(ctx context.Context, key mem.RO, val T, stats *Stats) {
 	defer func() {
 		if v := recover(); v != nil {
 			stats.Panics++
@@ -91,10 +92,7 @@ func (l *Cache) set(ctx context.Context, key string, val interface{}, stats *Sta
 		}
 	}()
 
-	setCtx, cancel := context.WithTimeout(ctx, l.opts.SetTimeout)
-	defer cancel()
-
-	if err := l.c.Set(setCtx, key, val); err != nil {
+	if err := l.c.Set(ctx, key, val); err != nil {
 		stats.Errors++
 		if l.opts.SetErrorHandler != nil {
 			l.opts.SetErrorHandler(key, err)
@@ -103,19 +101,19 @@ func (l *Cache) set(ctx context.Context, key string, val interface{}, stats *Sta
 }
 
 // Running returns the number of running cache accesses and lookups.
-func (l *Cache) Running() int {
-	var n int
+func (l *Cache[T]) Running() int {
+	var total int
 	for i := range l.groups {
 		s := &l.groups[i]
 		s.mu.Lock()
-		n += len(s.entries)
+		total += len(s.entries)
 		s.mu.Unlock()
 	}
-	return n
+	return total
 }
 
 // Stats returns statistics about all completed lookups and cache accesses.
-func (l *Cache) Stats() Stats {
+func (l *Cache[T]) Stats() Stats {
 	var stats Stats
 	for i := range l.groups {
 		s := &l.groups[i]
@@ -128,11 +126,10 @@ func (l *Cache) Stats() Stats {
 
 // Func defines a function for looking up values that will be placed in a Cache.
 //
-// If val is nil, by default the value will not be cached. See NewCache and WithCacheNil
-// for a way to cache nil values.
-//
-// Note: val is considered to be nil only if (val == nil) returns true.
-type Func func(ctx context.Context, key string) (val interface{}, err error)
+// If err is ErrSkip the result will not be cached.
+type Func[T any] func(ctx context.Context, key mem.RO) (val T, err error)
+
+var ErrSkip = errors.New("skipping result")
 
 // Opts can be used to configure or change the behaviour of a Cache.
 type Opts struct {
@@ -140,17 +137,10 @@ type Opts struct {
 	// which are getting refreshed in the background.
 	BackgroundRefresh bool
 
-	// CacheNil enables caching of nil values when set to true.
-	//
-	// By default nil values will not be cached.
-	//
-	// Only untyped nil values will be ignored. Typed nil values will always be cached.
-	CacheNil bool
-
 	// ErrorHandler will be called when either the cache access or the lookup returns an error.
 	//
 	// If nil errors will be ignored.
-	ErrorHandler func(key string, err error)
+	ErrorHandler func(key mem.RO, err error)
 
 	// Timeout specifies the timeout for the initial cache access + lookup, ignoring the time
 	// needed to put a value into the cache.
@@ -162,7 +152,7 @@ type Opts struct {
 	// Cache or when looking up a value.
 	//
 	// If nil panics will be ignored.
-	PanicHandler func(key string, v interface{})
+	PanicHandler func(key mem.RO, v interface{})
 
 	// RefreshAfter specifies the duration after which values in the cache will be treated
 	// as missing and refreshed.
@@ -184,7 +174,7 @@ type Opts struct {
 	// SetErrorHandler will be called when updating the underlying Cache fails.
 	//
 	// If nil errors will be ignored.
-	SetErrorHandler func(key string, err error)
+	SetErrorHandler func(key mem.RO, err error)
 
 	// SetTimeout specifies the timeout for saving a new or updated value into the underlying Cache.
 	//
@@ -237,21 +227,20 @@ func (s Stats) add(so Stats) Stats {
 	}
 }
 
-type lookupGroup struct {
-	cache *Cache
+type lookupGroup[T any] struct {
+	cache *Cache[T]
 
 	mu      sync.Mutex
-	entries map[uint64]*lookupGroupEntry
+	entries map[uint64]*lookupGroupEntry[T]
 	stats   Stats
 }
 
-func (lg *lookupGroup) add(hash uint64, key string) *lookupGroupEntry {
-	lge := &lookupGroupEntry{
-		cache: lg.cache,
-
+func (lg *lookupGroup[T]) add(hash uint64, key mem.RO) *lookupGroupEntry[T] {
+	lge := &lookupGroupEntry[T]{
 		group: lg,
-		hash:  hash,
-		key:   key,
+
+		hash: hash,
+		key:  key,
 
 		done: make(chan struct{}),
 	}
@@ -259,7 +248,7 @@ func (lg *lookupGroup) add(hash uint64, key string) *lookupGroupEntry {
 	return lge
 }
 
-func (lg *lookupGroup) get(hash uint64, key string) *lookupGroupEntry {
+func (lg *lookupGroup[T]) get(hash uint64, key mem.RO) *lookupGroupEntry[T] {
 	lg.mu.Lock()
 	sge, ok := lg.entries[hash]
 	if !ok {
@@ -268,70 +257,75 @@ func (lg *lookupGroup) get(hash uint64, key string) *lookupGroupEntry {
 	lg.mu.Unlock()
 
 	if !ok {
-		go sge.run(context.Background())
+		go sge.run()
 	}
 
 	return sge
 }
 
-func (lg *lookupGroup) remove(sge *lookupGroupEntry) {
+func (lg *lookupGroup[T]) remove(sge *lookupGroupEntry[T]) {
 	lg.mu.Lock()
 	delete(lg.entries, sge.hash)
 	lg.stats = sge.group.stats.add(sge.stats)
 	lg.mu.Unlock()
 }
 
-type lookupGroupEntry struct {
-	cache *Cache
-	group *lookupGroup
+type lookupGroupEntry[T any] struct {
+	group *lookupGroup[T]
 	hash  uint64
-	key   string
+	key   mem.RO
 
-	stats Stats
 	done  chan struct{}
+	stats Stats
 
-	val interface{}
-	age time.Duration
-	ok  bool
+	fetchCtx lazyTimeoutContext
+	setCtx   lazyTimeoutContext
+
+	age    time.Duration
+	closed bool
+	ok     bool
+	val    T
 }
 
-func (lge *lookupGroupEntry) closeAndRemove() {
-	select {
-	case <-lge.done:
-	default:
-		// only happens when we got an error or a panic
-		close(lge.done)
+func (lge *lookupGroupEntry[T]) close() {
+	if lge.closed {
+		return
 	}
+	close(lge.done)
+	lge.closed = true
+}
 
+func (lge *lookupGroupEntry[T]) closeAndRemove() {
+	lge.close()
 	lge.group.remove(lge)
 }
 
-func (lge *lookupGroupEntry) handleErr(err error) {
+func (lge *lookupGroupEntry[T]) handleErr(err error) {
 	lge.stats.Errors++
-	if lge.cache.opts.ErrorHandler != nil {
-		lge.cache.opts.ErrorHandler(lge.key, err)
+	if lge.group.cache.opts.ErrorHandler != nil {
+		lge.group.cache.opts.ErrorHandler(lge.key, err)
 	}
 }
 
-func (lge *lookupGroupEntry) handlePanic(v interface{}) {
+func (lge *lookupGroupEntry[T]) handlePanic(v interface{}) {
 	lge.stats.Panics++
-	if lge.cache.opts.PanicHandler != nil {
-		lge.cache.opts.PanicHandler(lge.key, v)
+	if lge.group.cache.opts.PanicHandler != nil {
+		lge.group.cache.opts.PanicHandler(lge.key, v)
 	}
 }
 
-func (lge *lookupGroupEntry) fetchCached(ctx context.Context) error {
-	if lge.val, lge.age, lge.ok = lge.cache.c.Get(ctx, lge.key); lge.ok {
+func (lge *lookupGroupEntry[T]) fetchCached(ctx context.Context) error {
+	if lge.val, lge.age, lge.ok = lge.group.cache.c.Get(ctx, lge.key); lge.ok {
 		return nil
 	}
 	return ctx.Err()
 }
 
-func (lge *lookupGroupEntry) lookupAndCache(baseCtx, ctx context.Context) {
+func (lge *lookupGroupEntry[T]) lookupAndCache(ctx context.Context) {
 	lge.stats.Lookups++
 
-	val, err := lge.cache.f(ctx, lge.key)
-	if err != nil {
+	val, err := lge.group.cache.f(ctx, lge.key)
+	if err != nil && !errors.Is(err, ErrSkip) {
 		lge.handleErr(err)
 		return
 	}
@@ -344,15 +338,19 @@ func (lge *lookupGroupEntry) lookupAndCache(baseCtx, ctx context.Context) {
 		lge.val, lge.age, lge.ok = val, 0, true
 
 		// close manually so that waiters can return without having to wait for the cache to be updated
-		close(lge.done)
+		lge.close()
 	}
 
-	if val != nil || lge.cache.opts.CacheNil {
-		lge.cache.set(baseCtx, lge.key, val, &lge.stats)
+	if lge.ok && err == nil {
+		setCtx := &lge.setCtx
+		setCtx.deadline = time.Now().Add(lge.group.cache.opts.SetTimeout)
+		defer setCtx.cancel()
+
+		lge.group.cache.set(setCtx, lge.key, val, &lge.stats)
 	}
 }
 
-func (lge *lookupGroupEntry) run(baseCtx context.Context) {
+func (lge *lookupGroupEntry[T]) run() {
 	defer func() {
 		if v := recover(); v != nil {
 			lge.handlePanic(v)
@@ -361,8 +359,9 @@ func (lge *lookupGroupEntry) run(baseCtx context.Context) {
 		lge.closeAndRemove()
 	}()
 
-	ctx, cancel := context.WithTimeout(baseCtx, lge.cache.opts.Timeout)
-	defer cancel()
+	ctx := &lge.fetchCtx
+	ctx.deadline = time.Now().Add(lge.group.cache.opts.Timeout)
+	defer ctx.cancel()
 
 	if err := lge.fetchCached(ctx); err != nil {
 		lge.handleErr(err)
@@ -374,25 +373,115 @@ func (lge *lookupGroupEntry) run(baseCtx context.Context) {
 	} else {
 		lge.stats.Hits++
 
-		if !lge.cache.opts.shouldRefresh(lge.age) {
+		if !lge.group.cache.opts.shouldRefresh(lge.age) {
 			return
 		}
 
 		lge.stats.Refreshes++
 
-		if lge.cache.opts.BackgroundRefresh {
-			close(lge.done)
+		if lge.group.cache.opts.BackgroundRefresh {
+			lge.close()
 		}
 	}
 
-	lge.lookupAndCache(baseCtx, ctx)
+	lge.lookupAndCache(ctx)
 }
 
-func (lge *lookupGroupEntry) wait(ctx context.Context) (val interface{}, age time.Duration, ok bool) {
+func (lge *lookupGroupEntry[T]) wait(ctx context.Context) (val T, age time.Duration, ok bool) {
 	select {
 	case <-ctx.Done():
-		return nil, 0, false
+		return
 	case <-lge.done:
 		return lge.val, lge.age, lge.ok
 	}
+}
+
+type lazyTimeoutContext struct {
+	deadline time.Time
+
+	mu    sync.Mutex
+	done  atomic.Value // of chan struct{}
+	err   error
+	timer *time.Timer
+}
+
+var closedChan = func() chan struct{} {
+	c := make(chan struct{})
+	close(c)
+	return c
+}()
+
+func (l *lazyTimeoutContext) cancel() {
+	l.cancelWithError(context.Canceled)
+}
+
+func (l *lazyTimeoutContext) cancelWithError(err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	l.cancelWithErrorLocked(err)
+}
+
+func (l *lazyTimeoutContext) cancelWithErrorLocked(err error) {
+	if l.err != nil {
+		return
+	}
+
+	done, _ := l.done.Load().(chan struct{})
+
+	if done != nil {
+		close(done)
+	} else {
+		l.done.Store(closedChan)
+	}
+
+	l.err = err
+
+	if l.timer != nil {
+		l.timer.Stop()
+		l.timer = nil
+	}
+}
+
+func (l *lazyTimeoutContext) Deadline() (time.Time, bool) {
+	return l.deadline, true
+}
+
+func (l *lazyTimeoutContext) Done() <-chan struct{} {
+	done, _ := l.done.Load().(chan struct{})
+	if done != nil {
+		return done
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	done, _ = l.done.Load().(chan struct{})
+	if done != nil {
+		return done
+	}
+
+	timeLeft := time.Until(l.deadline)
+
+	if timeLeft <= 0 {
+		l.cancelWithErrorLocked(context.DeadlineExceeded)
+		return closedChan
+	}
+
+	done = make(chan struct{})
+
+	l.done.Store(done)
+	l.timer = time.AfterFunc(timeLeft, func() { l.cancelWithError(context.DeadlineExceeded) })
+
+	return done
+}
+
+func (l *lazyTimeoutContext) Err() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.err
+}
+
+func (l *lazyTimeoutContext) Value(interface{}) interface{} {
+	return nil
 }
