@@ -26,8 +26,8 @@ type Cache[T any] struct {
 
 const defaultTimeout = 250 * time.Millisecond
 
-// NewCache returns a new *Cache using c as the underlying Cache and f for
-// looking up missing values.
+// NewCache returns a new Cache using c for storage and f for looking up
+// missing values.
 //
 // The underlying Cache must be safe for concurrent use.
 //
@@ -48,7 +48,7 @@ func NewCache[T any](c scache.Cache[T], f Func[T], opts *Opts) *Cache[T] {
 		opts.Timeout = defaultTimeout
 	}
 
-	const groups = 256
+	const groups = 64
 
 	cache := &Cache[T]{
 		opts: *opts,
@@ -152,7 +152,7 @@ type Opts struct {
 	// Cache or when looking up a value.
 	//
 	// If nil panics will be ignored.
-	PanicHandler func(key mem.RO, v interface{})
+	PanicHandler func(key mem.RO, v any)
 
 	// RefreshAfter specifies the duration after which values in the cache will be treated
 	// as missing and refreshed.
@@ -250,23 +250,23 @@ func (lg *lookupGroup[T]) add(hash uint64, key mem.RO) *lookupGroupEntry[T] {
 
 func (lg *lookupGroup[T]) get(hash uint64, key mem.RO) *lookupGroupEntry[T] {
 	lg.mu.Lock()
-	sge, ok := lg.entries[hash]
+	lge, ok := lg.entries[hash]
 	if !ok {
-		sge = lg.add(hash, key)
+		lge = lg.add(hash, key)
 	}
 	lg.mu.Unlock()
 
 	if !ok {
-		go sge.run()
+		go lge.run()
 	}
 
-	return sge
+	return lge
 }
 
-func (lg *lookupGroup[T]) remove(sge *lookupGroupEntry[T]) {
+func (lg *lookupGroup[T]) remove(lge *lookupGroupEntry[T]) {
 	lg.mu.Lock()
-	delete(lg.entries, sge.hash)
-	lg.stats = sge.group.stats.add(sge.stats)
+	delete(lg.entries, lge.hash)
+	lg.stats = lg.stats.add(lge.stats)
 	lg.mu.Unlock()
 }
 
@@ -307,7 +307,7 @@ func (lge *lookupGroupEntry[T]) handleErr(err error) {
 	}
 }
 
-func (lge *lookupGroupEntry[T]) handlePanic(v interface{}) {
+func (lge *lookupGroupEntry[T]) handlePanic(v any) {
 	lge.stats.Panics++
 	if lge.group.cache.opts.PanicHandler != nil {
 		lge.group.cache.opts.PanicHandler(lge.key, v)
@@ -482,6 +482,6 @@ func (l *lazyTimeoutContext) Err() error {
 	return l.err
 }
 
-func (l *lazyTimeoutContext) Value(interface{}) interface{} {
+func (l *lazyTimeoutContext) Value(any) any {
 	return nil
 }

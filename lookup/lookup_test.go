@@ -363,7 +363,7 @@ func TestLookupCache(t *testing.T) {
 		var lastMu sync.Mutex
 		var lastPanicKey mem.RO
 		var lastPanic error
-		onPanic := func(key mem.RO, v interface{}) {
+		onPanic := func(key mem.RO, v any) {
 			lastMu.Lock()
 			defer lastMu.Unlock()
 			lastPanicKey, lastPanic = key, errors.New(v.(string))

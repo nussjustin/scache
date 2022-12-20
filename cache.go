@@ -24,7 +24,7 @@ type Cache[T any] interface {
 // Noop implements an always empty cache.
 type Noop[T any] struct{}
 
-var _ Cache[interface{}] = Noop[interface{}]{}
+var _ Cache[any] = Noop[any]{}
 
 // Get implements the Cache interface.
 func (n Noop[T]) Get(context.Context, mem.RO) (val T, age time.Duration, ok bool) {
@@ -42,7 +42,7 @@ type ShardedCache[T any] struct {
 	shards []Cache[T]
 }
 
-var _ Cache[interface{}] = &ShardedCache[interface{}]{}
+var _ Cache[any] = &ShardedCache[any]{}
 
 // ErrInvalidShardsCount is returned by NewShardedCache when specifying an invalid number of shards (< 1).
 var ErrInvalidShardsCount = errors.New("invalid shards count")

@@ -57,7 +57,6 @@ c := lookup.NewCache[string](
 Looking up value
 
 ```go
-
 val, _, _ := c.Get(context.Background(), mem.S("hello"))
 if val != "HELLO" {
     panic("something went wrong... PANIC")

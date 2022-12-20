@@ -11,7 +11,7 @@ type chainedCache[T any] struct {
 	cs []Cache[T]
 }
 
-var _ Cache[interface{}] = &chainedCache[interface{}]{}
+var _ Cache[any] = &chainedCache[any]{}
 
 // NewChainedCache returns a Cache that tries to retrieve values from multiple caches in
 // order and adds new values to multiple caches at once.

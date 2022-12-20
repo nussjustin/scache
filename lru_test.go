@@ -52,7 +52,7 @@ func TestLRU(t *testing.T) {
 
 	var ft fakeTime
 
-	c := scache.NewLRU[interface{}](3)
+	c := scache.NewLRU[any](3)
 	c.NowFunc = ft.NowFunc
 
 	if got := c.Cap(); size != got {
@@ -61,72 +61,72 @@ func TestLRU(t *testing.T) {
 
 	key1, key2, key3, key4 := "key1", "key2", "key3", "key4"
 
-	assertCacheMiss[interface{}](t, c, ctx, key1)
-	assertCacheMiss[interface{}](t, c, ctx, key2)
-	assertCacheMiss[interface{}](t, c, ctx, key3)
-	assertCacheMiss[interface{}](t, c, ctx, key4)
+	assertCacheMiss[any](t, c, ctx, key1)
+	assertCacheMiss[any](t, c, ctx, key2)
+	assertCacheMiss[any](t, c, ctx, key3)
+	assertCacheMiss[any](t, c, ctx, key4)
 	assertLen(t, 0, c)
 
-	assertCacheSet[interface{}](t, c, ctx, key1, 1)
-	assertCacheGetWithAge[interface{}](t, c, ctx, key1, 1, 0*time.Millisecond)
-	assertCacheMiss[interface{}](t, c, ctx, key2)
-	assertCacheMiss[interface{}](t, c, ctx, key3)
-	assertCacheMiss[interface{}](t, c, ctx, key4)
+	assertCacheSet[any](t, c, ctx, key1, 1)
+	assertCacheGetWithAge[any](t, c, ctx, key1, 1, 0*time.Millisecond)
+	assertCacheMiss[any](t, c, ctx, key2)
+	assertCacheMiss[any](t, c, ctx, key3)
+	assertCacheMiss[any](t, c, ctx, key4)
 	assertLen(t, 1, c)
 
 	ft.Add(1 * time.Millisecond)
 
-	assertCacheSet[interface{}](t, c, ctx, key2, 2)
-	assertCacheGetWithAge[interface{}](t, c, ctx, key2, 2, 0*time.Millisecond)
-	assertCacheGetWithAge[interface{}](t, c, ctx, key1, 1, 1*time.Millisecond)
-	assertCacheMiss[interface{}](t, c, ctx, key3)
-	assertCacheMiss[interface{}](t, c, ctx, key4)
+	assertCacheSet[any](t, c, ctx, key2, 2)
+	assertCacheGetWithAge[any](t, c, ctx, key2, 2, 0*time.Millisecond)
+	assertCacheGetWithAge[any](t, c, ctx, key1, 1, 1*time.Millisecond)
+	assertCacheMiss[any](t, c, ctx, key3)
+	assertCacheMiss[any](t, c, ctx, key4)
 	assertLen(t, 2, c)
 
 	ft.Add(5 * time.Millisecond)
 
-	assertCacheSet[interface{}](t, c, ctx, key3, 3)
-	assertCacheGetWithAge[interface{}](t, c, ctx, key3, 3, 0*time.Millisecond)
-	assertCacheGetWithAge[interface{}](t, c, ctx, key1, 1, 6*time.Millisecond)
-	assertCacheGetWithAge[interface{}](t, c, ctx, key2, 2, 5*time.Millisecond)
-	assertCacheMiss[interface{}](t, c, ctx, key4)
+	assertCacheSet[any](t, c, ctx, key3, 3)
+	assertCacheGetWithAge[any](t, c, ctx, key3, 3, 0*time.Millisecond)
+	assertCacheGetWithAge[any](t, c, ctx, key1, 1, 6*time.Millisecond)
+	assertCacheGetWithAge[any](t, c, ctx, key2, 2, 5*time.Millisecond)
+	assertCacheMiss[any](t, c, ctx, key4)
 	assertLen(t, 3, c)
 
 	ft.Add(1 * time.Millisecond)
 
-	assertCacheSet[interface{}](t, c, ctx, key4, 4)
-	assertCacheGetWithAge[interface{}](t, c, ctx, key4, 4, 0*time.Millisecond)
-	assertCacheMiss[interface{}](t, c, ctx, key3)
-	assertCacheGetWithAge[interface{}](t, c, ctx, key1, 1, 7*time.Millisecond)
-	assertCacheGetWithAge[interface{}](t, c, ctx, key2, 2, 6*time.Millisecond)
+	assertCacheSet[any](t, c, ctx, key4, 4)
+	assertCacheGetWithAge[any](t, c, ctx, key4, 4, 0*time.Millisecond)
+	assertCacheMiss[any](t, c, ctx, key3)
+	assertCacheGetWithAge[any](t, c, ctx, key1, 1, 7*time.Millisecond)
+	assertCacheGetWithAge[any](t, c, ctx, key2, 2, 6*time.Millisecond)
 	assertLen(t, 3, c)
 
 	ft.Add(1 * time.Millisecond)
 
-	assertCacheSet[interface{}](t, c, ctx, key4, "3!")
-	assertCacheGetWithAge[interface{}](t, c, ctx, key4, "3!", 0*time.Millisecond)
-	assertCacheMiss[interface{}](t, c, ctx, key3)
-	assertCacheGetWithAge[interface{}](t, c, ctx, key1, 1, 8*time.Millisecond)
-	assertCacheGetWithAge[interface{}](t, c, ctx, key2, 2, 7*time.Millisecond)
+	assertCacheSet[any](t, c, ctx, key4, "3!")
+	assertCacheGetWithAge[any](t, c, ctx, key4, "3!", 0*time.Millisecond)
+	assertCacheMiss[any](t, c, ctx, key3)
+	assertCacheGetWithAge[any](t, c, ctx, key1, 1, 8*time.Millisecond)
+	assertCacheGetWithAge[any](t, c, ctx, key2, 2, 7*time.Millisecond)
 	assertLen(t, 3, c)
 
 	ft.Add(1 * time.Millisecond)
 
-	assertCacheSet[interface{}](t, c, ctx, key3, "3!")
-	assertCacheGetWithAge[interface{}](t, c, ctx, key3, "3!", 0*time.Millisecond)
-	assertCacheMiss[interface{}](t, c, ctx, key4)
-	assertCacheGetWithAge[interface{}](t, c, ctx, key2, 2, 8*time.Millisecond)
-	assertCacheGetWithAge[interface{}](t, c, ctx, key1, 1, 9*time.Millisecond)
+	assertCacheSet[any](t, c, ctx, key3, "3!")
+	assertCacheGetWithAge[any](t, c, ctx, key3, "3!", 0*time.Millisecond)
+	assertCacheMiss[any](t, c, ctx, key4)
+	assertCacheGetWithAge[any](t, c, ctx, key2, 2, 8*time.Millisecond)
+	assertCacheGetWithAge[any](t, c, ctx, key1, 1, 9*time.Millisecond)
 	assertLen(t, 3, c)
 
 	ft.Add(1 * time.Millisecond)
 
-	assertCacheSet[interface{}](t, c, ctx, key3, "3!!")
-	assertCacheSet[interface{}](t, c, ctx, key4, "4!")
-	assertCacheGetWithAge[interface{}](t, c, ctx, key1, 1, 10*time.Millisecond)
-	assertCacheMiss[interface{}](t, c, ctx, key2)
-	assertCacheGetWithAge[interface{}](t, c, ctx, key3, "3!!", 0*time.Millisecond)
-	assertCacheGetWithAge[interface{}](t, c, ctx, key4, "4!", 0*time.Millisecond)
+	assertCacheSet[any](t, c, ctx, key3, "3!!")
+	assertCacheSet[any](t, c, ctx, key4, "4!")
+	assertCacheGetWithAge[any](t, c, ctx, key1, 1, 10*time.Millisecond)
+	assertCacheMiss[any](t, c, ctx, key2)
+	assertCacheGetWithAge[any](t, c, ctx, key3, "3!!", 0*time.Millisecond)
+	assertCacheGetWithAge[any](t, c, ctx, key4, "4!", 0*time.Millisecond)
 	assertLen(t, 3, c)
 }
 
