@@ -168,6 +168,8 @@ type Opts struct {
 	// This can be useful to avoid thundering herd problems when many entries need to be
 	// refreshed at the same time.
 	//
+	// The returned duration will be subtracted from the value in RefreshAfter.
+	//
 	// If nil no jitter will be added.
 	RefreshAfterJitterFunc func() time.Duration
 
