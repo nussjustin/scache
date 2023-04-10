@@ -129,12 +129,18 @@ func (l *Cache[T]) Stats() Stats {
 // If err is ErrSkip the result will not be cached.
 type Func[T any] func(ctx context.Context, key mem.RO) (val T, err error)
 
-var ErrSkip = errors.New("skipping result")
+var (
+	// ErrSkip can be returned by a Func to indicate that the result should not be cached.
+	ErrSkip = errors.New("skipping result")
+)
 
 // Opts can be used to configure or change the behaviour of a Cache.
 type Opts struct {
-	// BackgroundRefresh enables refreshing of expired values in the background and serving of stale values for values
-	// which are getting refreshed in the background.
+	// BackgroundRefresh enables refreshing of expired values in the background and serving of
+	// stale values for values which are getting refreshed in the background.
+	//
+	// While a background refresh for a key all calls to [Cache.Get] will return the old, stale
+	// value.
 	BackgroundRefresh bool
 
 	// ErrorHandler will be called when either the cache access or the lookup returns an error.
@@ -157,10 +163,18 @@ type Opts struct {
 	// RefreshAfter specifies the duration after which values in the cache will be treated
 	// as missing and refreshed.
 	//
+	// If RefreshAfterJitterFunc is not nil it's result will be added to the value of RefreshAfter
+	// before checking the age of a value.
+	//
+	// If the sum of RefreshAfter and the result of RefreshAfterJitterFunc is <= 0 no refresh will
+	// be triggered.
+	//
 	// If a refresh fails the Cache will keep serving the old value and retry the refresh the
 	// next time the underlying cache is checked.
 	//
-	// If RefreshAfter is <= 0, values will never be treated as missing based on their age.
+	// By default, a refresh will happen synchronously and the new value will be returned (unless
+	// there was an error). This can be changed using BackgroundRefresh. See BackgroundRefresh for
+	// more information.
 	RefreshAfter time.Duration
 
 	// RefreshAfterJitterFunc can be used to add jitter to the value specified in RefreshAfter.
@@ -168,10 +182,12 @@ type Opts struct {
 	// This can be useful to avoid thundering herd problems when many entries need to be
 	// refreshed at the same time.
 	//
-	// The returned duration will be subtracted from the value in RefreshAfter.
+	// The returned duration will be added to the value in RefreshAfter.
 	//
 	// If nil no jitter will be added.
-	RefreshAfterJitterFunc func() time.Duration
+	//
+	// See RefreshAfter for more details.
+	RefreshAfterJitterFunc func(key mem.RO) time.Duration
 
 	// SetErrorHandler will be called when updating the underlying Cache fails.
 	//
@@ -184,15 +200,12 @@ type Opts struct {
 	SetTimeout time.Duration
 }
 
-func (o Opts) shouldRefresh(age time.Duration) bool {
-	if o.RefreshAfter <= 0 {
-		return false
-	}
+func (o Opts) shouldRefresh(key mem.RO, age time.Duration) bool {
 	limit := o.RefreshAfter
 	if o.RefreshAfterJitterFunc != nil {
-		limit -= o.RefreshAfterJitterFunc()
+		limit += o.RefreshAfterJitterFunc(key)
 	}
-	return age >= limit
+	return limit > 0 && limit <= age
 }
 
 // Stats contains statistics about a Cache.
@@ -375,7 +388,7 @@ func (lge *lookupGroupEntry[T]) run() {
 	} else {
 		lge.stats.Hits++
 
-		if !lge.group.cache.opts.shouldRefresh(lge.age) {
+		if !lge.group.cache.opts.shouldRefresh(lge.key, lge.age) {
 			return
 		}
 

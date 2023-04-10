@@ -522,20 +522,26 @@ func TestLookupCache(t *testing.T) {
 			},
 			&lookup.Opts{
 				RefreshAfter: 1 * time.Second,
-				RefreshAfterJitterFunc: func() time.Duration {
+				RefreshAfterJitterFunc: func(key mem.RO) time.Duration {
+					if !key.EqualString("hello") {
+						panic("unexpected key")
+					}
 					return 100 * time.Millisecond
 				},
 			})
 
 		assertCacheGet[int](t, c, ctx, "hello", 1)
 		assertStats(t, c, lookup.Stats{Lookups: 1, Misses: 1, Hits: 0})
-		assertCacheGet[int](t, lru, ctx, "hello", 1)
 
-		ft.Add(900 * time.Millisecond)
+		ft.Add(time.Second)
+
+		assertCacheGet[int](t, c, ctx, "hello", 1)
+		assertStats(t, c, lookup.Stats{Lookups: 1, Misses: 1, Hits: 1, Refreshes: 0})
+
+		ft.Add(100 * time.Millisecond)
 
 		assertCacheGet[int](t, c, ctx, "hello", 2)
-		assertStats(t, c, lookup.Stats{Lookups: 2, Misses: 1, Hits: 1, Refreshes: 1})
-		assertCacheGet[int](t, lru, ctx, "hello", 2)
+		assertStats(t, c, lookup.Stats{Lookups: 2, Misses: 1, Hits: 2, Refreshes: 1})
 	})
 
 	t.Run("Set Timeout", func(t *testing.T) {
