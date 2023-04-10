@@ -129,10 +129,8 @@ func (l *Cache[T]) Stats() Stats {
 // If err is ErrSkip the result will not be cached.
 type Func[T any] func(ctx context.Context, key mem.RO) (val T, err error)
 
-var (
-	// ErrSkip can be returned by a Func to indicate that the result should not be cached.
-	ErrSkip = errors.New("skipping result")
-)
+// ErrSkip can be returned by a Func to indicate that the result should not be cached.
+var ErrSkip = errors.New("skipping result")
 
 // Opts can be used to configure or change the behaviour of a Cache.
 type Opts struct {

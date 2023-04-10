@@ -1,6 +1,7 @@
 linters:
   enable-all: true
   disable:
+    - contextcheck
     - exhaustivestruct # reports &Opts{} as an error
     - exhaustruct # reports &Opts{} as an error
     - gochecknoglobals
