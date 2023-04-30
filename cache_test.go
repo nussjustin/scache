@@ -128,7 +128,7 @@ func TestNoopCache(t *testing.T) {
 
 	const key = "foo"
 
-	c := scache.Noop[string]{}
+	c := scache.NewNoopCache[string]()
 
 	assertCacheMiss[string](t, c, ctx, key)
 	assertCacheSet[string](t, c, ctx, key, key)

@@ -96,17 +96,22 @@ func (e EntryView[T]) TagsCount() int {
 	return len(e.tags)
 }
 
-// Noop implements an always empty cache.
-type Noop[T any] struct{}
+// noop implements an always empty cache.
+type noop[T any] struct{}
 
-var _ Cache[any] = Noop[any]{}
+var _ Cache[any] = noop[any]{}
+
+// NewNoopCache returns a Cache that never caches anything.
+func NewNoopCache[T any]() Cache[T] {
+	return noop[T]{}
+}
 
 // Get implements the Cache interface.
-func (n Noop[T]) Get(context.Context, mem.RO) (entry EntryView[T], ok bool) {
+func (n noop[T]) Get(context.Context, mem.RO) (entry EntryView[T], ok bool) {
 	return
 }
 
 // Set implements the Cache interface.
-func (n Noop[T]) Set(context.Context, mem.RO, Entry[T]) error {
+func (n noop[T]) Set(context.Context, mem.RO, Entry[T]) error {
 	return nil
 }

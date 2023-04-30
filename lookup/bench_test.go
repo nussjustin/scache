@@ -24,7 +24,7 @@ func BenchmarkLookup(b *testing.B) {
 	})
 
 	b.Run("Miss", func(b *testing.B) {
-		var nc scache.Noop[string]
+		nc := scache.NewNoopCache[string]()
 
 		f := func(ctx context.Context, key mem.RO) (entry scache.Entry[string], err error) {
 			return scache.Value(""), lookup.ErrSkip
@@ -54,7 +54,7 @@ func BenchmarkLookupParallel(b *testing.B) {
 	})
 
 	b.Run("Miss", func(b *testing.B) {
-		var nc scache.Noop[string]
+		nc := scache.NewNoopCache[string]()
 
 		f := func(ctx context.Context, key mem.RO) (entry scache.Entry[string], err error) {
 			return scache.Value(""), lookup.ErrSkip
