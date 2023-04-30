@@ -4,16 +4,19 @@ import (
 	"context"
 	"testing"
 
+	"go4.org/mem"
+
 	"github.com/nussjustin/scache"
 	"github.com/nussjustin/scache/lookup"
-	"go4.org/mem"
 )
 
 func BenchmarkLookup(b *testing.B) {
 	b.Run("Hit", func(b *testing.B) {
-		c := lookup.NewCache[string](newMapCache[string](map[string]string{"hit": "hit"}), func(ctx context.Context, key mem.RO) (val string, err error) {
-			return "", lookup.ErrSkip
-		}, nil)
+		f := func(ctx context.Context, key mem.RO) (entry scache.Entry[string], err error) {
+			return scache.Value(""), lookup.ErrSkip
+		}
+
+		c := lookup.NewCache[string](newMapCache[string](map[string]string{"hit": "hit"}), f, nil)
 
 		for i := 0; i < b.N; i++ {
 			c.Get(context.Background(), mem.S("hit"))
@@ -23,9 +26,11 @@ func BenchmarkLookup(b *testing.B) {
 	b.Run("Miss", func(b *testing.B) {
 		var nc scache.Noop[string]
 
-		c := lookup.NewCache[string](nc, func(ctx context.Context, key mem.RO) (val string, err error) {
-			return "", lookup.ErrSkip
-		}, nil)
+		f := func(ctx context.Context, key mem.RO) (entry scache.Entry[string], err error) {
+			return scache.Value(""), lookup.ErrSkip
+		}
+
+		c := lookup.NewCache[string](nc, f, nil)
 
 		for i := 0; i < b.N; i++ {
 			c.Get(context.Background(), mem.S("miss"))
@@ -35,9 +40,11 @@ func BenchmarkLookup(b *testing.B) {
 
 func BenchmarkLookupParallel(b *testing.B) {
 	b.Run("Hit", func(b *testing.B) {
-		c := lookup.NewCache[string](newMapCache[string](map[string]string{"hit": "hit"}), func(ctx context.Context, key mem.RO) (val string, err error) {
-			return "", lookup.ErrSkip
-		}, nil)
+		f := func(ctx context.Context, key mem.RO) (entry scache.Entry[string], err error) {
+			return scache.Value(""), lookup.ErrSkip
+		}
+
+		c := lookup.NewCache[string](newMapCache[string](map[string]string{"hit": "hit"}), f, nil)
 
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
@@ -49,9 +56,11 @@ func BenchmarkLookupParallel(b *testing.B) {
 	b.Run("Miss", func(b *testing.B) {
 		var nc scache.Noop[string]
 
-		c := lookup.NewCache[string](nc, func(ctx context.Context, key mem.RO) (val string, err error) {
-			return "", lookup.ErrSkip
-		}, nil)
+		f := func(ctx context.Context, key mem.RO) (entry scache.Entry[string], err error) {
+			return scache.Value(""), lookup.ErrSkip
+		}
+
+		c := lookup.NewCache[string](nc, f, nil)
 
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {

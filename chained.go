@@ -2,7 +2,6 @@ package scache
 
 import (
 	"context"
-	"time"
 
 	"go4.org/mem"
 )
@@ -22,20 +21,19 @@ func NewChainedCache[T any](cs ...Cache[T]) Cache[T] {
 }
 
 // Get implements the Cache interface.
-func (cc *chainedCache[T]) Get(ctx context.Context, key mem.RO) (val T, age time.Duration, ok bool) {
+func (cc *chainedCache[T]) Get(ctx context.Context, key mem.RO) (entry EntryView[T], ok bool) {
 	for _, c := range cc.cs {
-		val, age, ok = c.Get(ctx, key)
+		entry, ok = c.Get(ctx, key)
 		if ok {
 			return
 		}
 	}
-	var zero T
-	return zero, 0, false
+	return EntryView[T]{}, false
 }
 
-func (cc *chainedCache[T]) Set(ctx context.Context, key mem.RO, val T) error {
+func (cc *chainedCache[T]) Set(ctx context.Context, key mem.RO, entry Entry[T]) error {
 	for _, c := range cc.cs {
-		if err := c.Set(ctx, key, val); err != nil {
+		if err := c.Set(ctx, key, entry); err != nil {
 			return err
 		}
 	}

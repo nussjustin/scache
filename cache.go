@@ -2,7 +2,6 @@ package scache
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"go4.org/mem"
@@ -13,12 +12,88 @@ type Cache[T any] interface {
 	// Get retrieves the cached value for the given key.
 	//
 	// The age return value contains the duration for which the value is in the cache.
-	Get(ctx context.Context, key mem.RO) (val T, age time.Duration, ok bool)
+	Get(ctx context.Context, key mem.RO) (entry EntryView[T], ok bool)
 
-	// Set adds the given value to the cache.
+	// Set adds the given view to the cache.
 	//
 	// If there is already a value with the same key in the Cache, it will be replaced.
-	Set(ctx context.Context, key mem.RO, val T) error
+	Set(ctx context.Context, key mem.RO, entry Entry[T]) error
+}
+
+// Entry defines a new entry to be added to a cache.
+type Entry[T any] struct {
+	// CreatedAt contains the time at which the entry was created.
+	//
+	// If the value is empty it will be set automatically when saving the entry.
+	CreatedAt time.Time
+
+	// ExpiresAt defines an optional expiration time after which the value should be removed from the cache.
+	ExpiresAt time.Time
+
+	// Key is the key used for saving and looking up the entry.
+	//
+	// This is ignored when saving an entry.
+	Key mem.RO
+
+	// Tags is an optional list of tags that can be used by caches for example to offer deleting entries by tag.
+	Tags []mem.RO
+
+	// Value contains the value that will be cached.
+	Value T
+}
+
+// Value returns a new Entry for the given value. This is a shortcut for Entry[T]{Value: v}.
+func Value[T any](v T) Entry[T] {
+	return Entry[T]{Value: v}
+}
+
+// View returns a new EntryView for e with the given key and creation time.
+func (e Entry[T]) View() EntryView[T] {
+	v := EntryView[T]{
+		CreatedAt: e.CreatedAt,
+		ExpiresAt: e.ExpiresAt,
+		Key:       e.Key,
+		Value:     e.Value,
+	}
+
+	if len(e.Tags) > 0 {
+		v.tags = make([]mem.RO, len(e.Tags))
+		copy(v.tags, e.Tags)
+	}
+
+	return v
+}
+
+// EntryView provides read-only view of a cache entry.
+type EntryView[T any] struct {
+	// CreatedAt contains the time at which the entry was created.
+	CreatedAt time.Time
+
+	// ExpiresAt defines an optional expiration time for the Entry after which it should be deleted.
+	ExpiresAt time.Time
+
+	// Key is the key under which the entry was saved.
+	Key mem.RO
+
+	// Value contains the cached value.
+	Value T
+
+	// Private so that users can not change the slice
+	tags []mem.RO
+}
+
+// Tags calls f for each tag associated with the view. If f returns false, the method returns.
+func (e EntryView[T]) Tags(f func(mem.RO) bool) {
+	for i := range e.tags {
+		if !f(e.tags[i]) {
+			return
+		}
+	}
+}
+
+// TagsCount returns the number of tags associated with the view.
+func (e EntryView[T]) TagsCount() int {
+	return len(e.tags)
 }
 
 // Noop implements an always empty cache.
@@ -27,70 +102,11 @@ type Noop[T any] struct{}
 var _ Cache[any] = Noop[any]{}
 
 // Get implements the Cache interface.
-func (n Noop[T]) Get(context.Context, mem.RO) (val T, age time.Duration, ok bool) {
+func (n Noop[T]) Get(context.Context, mem.RO) (entry EntryView[T], ok bool) {
 	return
 }
 
 // Set implements the Cache interface.
-func (n Noop[T]) Set(context.Context, mem.RO, T) error {
+func (n Noop[T]) Set(context.Context, mem.RO, Entry[T]) error {
 	return nil
-}
-
-// ShardedCache implements a Cache that partitions entries into multiple underlying Cache
-// instances to reduce contention on each Cache instance and increase scalability.
-type ShardedCache[T any] struct {
-	shards []Cache[T]
-}
-
-var _ Cache[any] = &ShardedCache[any]{}
-
-// ErrInvalidShardsCount is returned by NewShardedCache when specifying an invalid number of shards (< 1).
-var ErrInvalidShardsCount = errors.New("invalid shards count")
-
-const minShards = 1
-
-// NewShardedCache returns a new ShardedCache using the given number of shards.
-//
-// For each shard the factory function will be called with the index of the shard (beginning
-// at 0) and the returned Cache will be used for all keys that map to the shard with the
-// shard index.
-//
-// A basic factory could look like this:
-//
-//	func(int) Cache { return NewLRU(32) }
-func NewShardedCache[T any](shards int, factory func(shard int) Cache[T]) (*ShardedCache[T], error) {
-	if shards < minShards {
-		return nil, ErrInvalidShardsCount
-	}
-
-	ss := make([]Cache[T], shards)
-	for i := range ss {
-		ss[i] = factory(i)
-	}
-
-	return &ShardedCache[T]{shards: ss}, nil
-}
-
-// Get implements the Cache interface.
-//
-// This is a shorthand for calling
-//
-//	s.Shard(key).Get(ctx, key)
-func (s *ShardedCache[T]) Get(ctx context.Context, key mem.RO) (val T, age time.Duration, ok bool) {
-	return s.Shard(key).Get(ctx, key)
-}
-
-// Set implements the Cache interface.
-//
-// This is a shorthand for calling
-//
-//	s.Shard(key).Set(ctx, key, val)
-func (s *ShardedCache[T]) Set(ctx context.Context, key mem.RO, val T) error {
-	return s.Shard(key).Set(ctx, key, val)
-}
-
-// Shard returns the underlying Cache used for the given key.
-func (s *ShardedCache[T]) Shard(key mem.RO) Cache[T] {
-	idx := int(key.MapHash() % uint64(len(s.shards)))
-	return s.shards[idx]
 }

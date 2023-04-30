@@ -9,8 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nussjustin/scache"
 	"go4.org/mem"
+
+	"github.com/nussjustin/scache"
 )
 
 type lenner interface{ Len() int }
@@ -24,152 +25,162 @@ func assertLen(tb testing.TB, want int, lenner lenner) {
 }
 
 type remover[T any] interface {
-	Remove(ctx context.Context, key mem.RO) (val T, age time.Duration, ok bool)
+	Remove(ctx context.Context, key mem.RO) (entry scache.EntryView[T], ok bool)
 }
 
-func assertRemoveWithAge[T any](tb testing.TB, remover remover[T], ctx context.Context, key string, want T, wantAge time.Duration) {
+func assertRemove[T any](tb testing.TB, remover remover[T], ctx context.Context, key string, want T) {
 	tb.Helper()
 
-	got, gotAge, ok := remover.Remove(ctx, mem.S(key))
+	got, ok := remover.Remove(ctx, mem.S(key))
 	if !ok {
 		tb.Fatalf("failed to remove key %q", key)
 	}
 
-	if !reflect.DeepEqual(want, got) {
+	if !reflect.DeepEqual(want, got.Value) {
 		tb.Fatalf("failed to assert value: want %v got %v", want, got)
-	}
-
-	if wantAge != gotAge {
-		tb.Fatalf("failed to assert gotAge: want at least %s got %s", wantAge, gotAge)
 	}
 }
 
 func TestLRU(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Run("Eviction", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	const size = 3
+		const size = 3
 
-	var ft fakeTime
+		var ft fakeTime
 
-	c := scache.NewLRU[any](3)
-	c.NowFunc = ft.NowFunc
+		c := scache.NewLRU[any](3)
+		c.NowFunc = ft.Now
 
-	if got := c.Cap(); size != got {
-		t.Fatalf("wanted cache with cap %d, got cap %d", size, got)
-	}
+		if got := c.Cap(); size != got {
+			t.Fatalf("wanted cache with cap %d, got cap %d", size, got)
+		}
 
-	key1, key2, key3, key4 := "key1", "key2", "key3", "key4"
+		key1, key2, key3, key4 := "key1", "key2", "key3", "key4"
 
-	assertCacheMiss[any](t, c, ctx, key1)
-	assertCacheMiss[any](t, c, ctx, key2)
-	assertCacheMiss[any](t, c, ctx, key3)
-	assertCacheMiss[any](t, c, ctx, key4)
-	assertLen(t, 0, c)
+		t0 := ft.Now()
 
-	assertCacheSet[any](t, c, ctx, key1, 1)
-	assertCacheGetWithAge[any](t, c, ctx, key1, 1, 0*time.Millisecond)
-	assertCacheMiss[any](t, c, ctx, key2)
-	assertCacheMiss[any](t, c, ctx, key3)
-	assertCacheMiss[any](t, c, ctx, key4)
-	assertLen(t, 1, c)
+		assertCacheMiss[any](t, c, ctx, key1)
+		assertCacheMiss[any](t, c, ctx, key2)
+		assertCacheMiss[any](t, c, ctx, key3)
+		assertCacheMiss[any](t, c, ctx, key4)
+		assertLen(t, 0, c)
 
-	ft.Add(1 * time.Millisecond)
+		assertCacheSet[any](t, c, ctx, key1, 1)
+		assertCacheGetWithCreatedAt[any](t, c, ctx, key1, 1, t0)
+		assertCacheMiss[any](t, c, ctx, key2)
+		assertCacheMiss[any](t, c, ctx, key3)
+		assertCacheMiss[any](t, c, ctx, key4)
+		assertLen(t, 1, c)
 
-	assertCacheSet[any](t, c, ctx, key2, 2)
-	assertCacheGetWithAge[any](t, c, ctx, key2, 2, 0*time.Millisecond)
-	assertCacheGetWithAge[any](t, c, ctx, key1, 1, 1*time.Millisecond)
-	assertCacheMiss[any](t, c, ctx, key3)
-	assertCacheMiss[any](t, c, ctx, key4)
-	assertLen(t, 2, c)
+		ft.Add(1 * time.Millisecond)
 
-	ft.Add(5 * time.Millisecond)
+		t1 := ft.Now().Add(time.Second)
 
-	assertCacheSet[any](t, c, ctx, key3, 3)
-	assertCacheGetWithAge[any](t, c, ctx, key3, 3, 0*time.Millisecond)
-	assertCacheGetWithAge[any](t, c, ctx, key1, 1, 6*time.Millisecond)
-	assertCacheGetWithAge[any](t, c, ctx, key2, 2, 5*time.Millisecond)
-	assertCacheMiss[any](t, c, ctx, key4)
-	assertLen(t, 3, c)
+		assertCacheSetEntry[any](t, c, ctx, key2, scache.Entry[any]{CreatedAt: t1, Value: 2})
+		assertCacheGetWithCreatedAt[any](t, c, ctx, key2, 2, t1)
+		assertCacheGetWithCreatedAt[any](t, c, ctx, key1, 1, t0)
+		assertCacheMiss[any](t, c, ctx, key3)
+		assertCacheMiss[any](t, c, ctx, key4)
+		assertLen(t, 2, c)
 
-	ft.Add(1 * time.Millisecond)
+		ft.Add(5 * time.Millisecond)
 
-	assertCacheSet[any](t, c, ctx, key4, 4)
-	assertCacheGetWithAge[any](t, c, ctx, key4, 4, 0*time.Millisecond)
-	assertCacheMiss[any](t, c, ctx, key3)
-	assertCacheGetWithAge[any](t, c, ctx, key1, 1, 7*time.Millisecond)
-	assertCacheGetWithAge[any](t, c, ctx, key2, 2, 6*time.Millisecond)
-	assertLen(t, 3, c)
+		assertCacheSet[any](t, c, ctx, key3, 3)
+		assertCacheGetWithCreatedAt[any](t, c, ctx, key3, 3, ft.Now())
+		assertCacheGetWithCreatedAt[any](t, c, ctx, key1, 1, t0)
+		assertCacheGetWithCreatedAt[any](t, c, ctx, key2, 2, t1)
+		assertCacheMiss[any](t, c, ctx, key4)
+		assertLen(t, 3, c)
 
-	ft.Add(1 * time.Millisecond)
+		ft.Add(1 * time.Millisecond)
 
-	assertCacheSet[any](t, c, ctx, key4, "3!")
-	assertCacheGetWithAge[any](t, c, ctx, key4, "3!", 0*time.Millisecond)
-	assertCacheMiss[any](t, c, ctx, key3)
-	assertCacheGetWithAge[any](t, c, ctx, key1, 1, 8*time.Millisecond)
-	assertCacheGetWithAge[any](t, c, ctx, key2, 2, 7*time.Millisecond)
-	assertLen(t, 3, c)
+		assertCacheSet[any](t, c, ctx, key4, 4)
+		assertCacheGetWithCreatedAt[any](t, c, ctx, key4, 4, ft.Now())
+		assertCacheMiss[any](t, c, ctx, key3)
+		assertCacheGetWithCreatedAt[any](t, c, ctx, key1, 1, t0)
+		assertCacheGetWithCreatedAt[any](t, c, ctx, key2, 2, t1)
+		assertLen(t, 3, c)
 
-	ft.Add(1 * time.Millisecond)
+		ft.Add(1 * time.Millisecond)
 
-	assertCacheSet[any](t, c, ctx, key3, "3!")
-	assertCacheGetWithAge[any](t, c, ctx, key3, "3!", 0*time.Millisecond)
-	assertCacheMiss[any](t, c, ctx, key4)
-	assertCacheGetWithAge[any](t, c, ctx, key2, 2, 8*time.Millisecond)
-	assertCacheGetWithAge[any](t, c, ctx, key1, 1, 9*time.Millisecond)
-	assertLen(t, 3, c)
+		assertCacheSet[any](t, c, ctx, key4, "3!")
+		assertCacheGetWithCreatedAt[any](t, c, ctx, key4, "3!", ft.Now())
+		assertCacheMiss[any](t, c, ctx, key3)
+		assertCacheGetWithCreatedAt[any](t, c, ctx, key1, 1, t0)
+		assertCacheGetWithCreatedAt[any](t, c, ctx, key2, 2, t1)
+		assertLen(t, 3, c)
 
-	ft.Add(1 * time.Millisecond)
+		ft.Add(1 * time.Millisecond)
 
-	assertCacheSet[any](t, c, ctx, key3, "3!!")
-	assertCacheSet[any](t, c, ctx, key4, "4!")
-	assertCacheGetWithAge[any](t, c, ctx, key1, 1, 10*time.Millisecond)
-	assertCacheMiss[any](t, c, ctx, key2)
-	assertCacheGetWithAge[any](t, c, ctx, key3, "3!!", 0*time.Millisecond)
-	assertCacheGetWithAge[any](t, c, ctx, key4, "4!", 0*time.Millisecond)
-	assertLen(t, 3, c)
-}
+		assertCacheSet[any](t, c, ctx, key3, "3!")
+		assertCacheGetWithCreatedAt[any](t, c, ctx, key3, "3!", ft.Now())
+		assertCacheMiss[any](t, c, ctx, key4)
+		assertCacheGetWithCreatedAt[any](t, c, ctx, key2, 2, t1)
+		assertCacheGetWithCreatedAt[any](t, c, ctx, key1, 1, t0)
+		assertLen(t, 3, c)
 
-func TestLRUWithTTL(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ft.Add(1 * time.Millisecond)
 
-	var ft fakeTime
+		assertCacheSet[any](t, c, ctx, key3, "3!!")
+		assertCacheSet[any](t, c, ctx, key4, "4!")
+		assertCacheGetWithCreatedAt[any](t, c, ctx, key1, 1, t0)
+		assertCacheMiss[any](t, c, ctx, key2)
+		assertCacheGetWithCreatedAt[any](t, c, ctx, key3, "3!!", ft.Now())
+		assertCacheGetWithCreatedAt[any](t, c, ctx, key4, "4!", ft.Now())
+		assertLen(t, 3, c)
+	})
 
-	c := scache.NewLRUWithTTL[string](2, 150*time.Millisecond)
-	c.NowFunc = ft.NowFunc
+	t.Run("Expiry", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	assertCacheSet[string](t, c, ctx, "hello", "world")
-	assertCacheGet[string](t, c, ctx, "hello", "world")
-	assertLen(t, 1, c)
+		const ttl = 150 * time.Millisecond
 
-	ft.Add(150 * time.Millisecond)
+		var ft fakeTime
 
-	assertLen(t, 1, c)
-	assertCacheMiss[string](t, c, ctx, "hello")
+		value := func(s string) scache.Entry[string] {
+			entry := scache.Value(s)
+			entry.ExpiresAt = ft.Now().Add(ttl)
+			return entry
+		}
 
-	assertCacheSet[string](t, c, ctx, "hello", "world!")
-	assertCacheGet[string](t, c, ctx, "hello", "world!")
-	assertLen(t, 1, c)
+		c := scache.NewLRU[string](2)
+		c.NowFunc = ft.Now
 
-	ft.Add(50 * time.Millisecond)
+		assertCacheSetEntry[string](t, c, ctx, "hello", value("world"))
+		assertCacheGet[string](t, c, ctx, "hello", "world")
+		assertLen(t, 1, c)
 
-	assertCacheSet[string](t, c, ctx, "foo", "bar")
-	assertCacheGet[string](t, c, ctx, "foo", "bar")
-	assertLen(t, 2, c)
+		ft.Add(150 * time.Millisecond)
 
-	ft.Add(100 * time.Millisecond)
+		assertLen(t, 1, c)
+		assertCacheMiss[string](t, c, ctx, "hello")
 
-	assertLen(t, 2, c)
-	assertCacheMiss[string](t, c, ctx, "hello")
-	assertLen(t, 1, c)
-	assertCacheGet[string](t, c, ctx, "foo", "bar")
+		assertCacheSetEntry[string](t, c, ctx, "hello", value("world!"))
+		assertCacheGet[string](t, c, ctx, "hello", "world!")
+		assertLen(t, 1, c)
 
-	ft.Add(50 * time.Millisecond)
+		ft.Add(50 * time.Millisecond)
 
-	assertLen(t, 1, c)
-	assertCacheMiss[string](t, c, ctx, "foo")
-	assertLen(t, 0, c)
+		assertCacheSetEntry[string](t, c, ctx, "foo", value("bar"))
+		assertCacheGet[string](t, c, ctx, "foo", "bar")
+		assertLen(t, 2, c)
+
+		ft.Add(100 * time.Millisecond)
+
+		assertLen(t, 2, c)
+		assertCacheMiss[string](t, c, ctx, "hello")
+		assertLen(t, 1, c)
+		assertCacheGet[string](t, c, ctx, "foo", "bar")
+
+		ft.Add(50 * time.Millisecond)
+
+		assertLen(t, 1, c)
+		assertCacheMiss[string](t, c, ctx, "foo")
+		assertLen(t, 0, c)
+	})
 }
 
 func TestLRU_Remove(t *testing.T) {
@@ -179,7 +190,7 @@ func TestLRU_Remove(t *testing.T) {
 	var ft fakeTime
 
 	c := scache.NewLRU[int](4)
-	c.NowFunc = ft.NowFunc
+	c.NowFunc = ft.Now
 
 	assertCacheSet[int](t, c, ctx, "one", 1)
 	assertCacheSet[int](t, c, ctx, "two", 2)
@@ -187,10 +198,10 @@ func TestLRU_Remove(t *testing.T) {
 	assertCacheSet[int](t, c, ctx, "three", 3)
 	assertCacheSet[int](t, c, ctx, "four", 4)
 
-	assertRemoveWithAge[int](t, c, ctx, "one", 1, 50*time.Millisecond)
+	assertRemove[int](t, c, ctx, "one", 1)
 	assertCacheMiss[int](t, c, ctx, "one")
 	assertLen(t, 3, c)
-	assertRemoveWithAge[int](t, c, ctx, "four", 4, 0)
+	assertRemove[int](t, c, ctx, "four", 4)
 	assertCacheMiss[int](t, c, ctx, "four")
 	assertLen(t, 2, c)
 }
@@ -216,7 +227,7 @@ func BenchmarkLRU(b *testing.B) {
 
 		for i := 0; i < b.N; i++ {
 			for _, key := range keys {
-				if _, _, ok := c.Get(ctx, mem.S(key)); !ok {
+				if _, ok := c.Get(ctx, mem.S(key)); !ok {
 					b.Fatalf("failed to get key %q", key)
 				}
 			}
@@ -234,7 +245,7 @@ func BenchmarkLRU(b *testing.B) {
 				c := scache.NewLRU[string](len(keys))
 
 				for _, key := range keys {
-					if err := c.Set(ctx, mem.S(key), key); err != nil {
+					if err := c.Set(ctx, mem.S(key), scache.Value(key)); err != nil {
 						b.Fatalf("failed to set key %q to value %q: %s", key, key, err)
 					}
 				}
@@ -257,7 +268,7 @@ func BenchmarkLRU(b *testing.B) {
 				b.StartTimer()
 
 				for _, key := range keys {
-					if err := c.Set(ctx, mem.S(key), key); err != nil {
+					if err := c.Set(ctx, mem.S(key), scache.Value(key)); err != nil {
 						b.Fatalf("failed to set key %q to value %q: %s", key, key, err)
 					}
 				}
@@ -276,7 +287,7 @@ func BenchmarkLRU(b *testing.B) {
 
 			for i := 0; i < b.N; i++ {
 				for _, key := range keys {
-					if err := c.Set(ctx, mem.S(key), key); err != nil {
+					if err := c.Set(ctx, mem.S(key), scache.Value(key)); err != nil {
 						b.Fatalf("failed to set key %q to value %q: %s", key, key, err)
 					}
 				}
@@ -302,7 +313,7 @@ func ExampleLRU() {
 
 	lru := scache.NewLRU[User](32)
 
-	if err := lru.Set(ctx, mem.S(strconv.Itoa(user.ID)), user); err != nil {
+	if err := lru.Set(ctx, mem.S(strconv.Itoa(user.ID)), scache.Value(user)); err != nil {
 		log.Fatalf("failed to cache user %d: %s", user.ID, err)
 	}
 
@@ -310,13 +321,13 @@ func ExampleLRU() {
 
 	userID := getUserID(ctx)
 
-	// Ignore age of cache entry
-	user, _, ok := lru.Get(ctx, mem.S(strconv.Itoa(userID)))
+	// Ignore age of cache view
+	entry, ok := lru.Get(ctx, mem.S(strconv.Itoa(userID)))
 	if !ok {
 		log.Fatalf("user with ID %d not found in cache", userID)
 	}
 
-	fmt.Printf("%+v\n", user)
+	fmt.Printf("%+v\n", entry.Value)
 
 	// Output:
 	//
@@ -346,19 +357,19 @@ func ExampleLRU_overflow() {
 	}
 
 	for _, user := range users {
-		if err := lru.Set(ctx, mem.S(strconv.Itoa(user.ID)), user); err != nil {
+		if err := lru.Set(ctx, mem.S(strconv.Itoa(user.ID)), scache.Value(user)); err != nil {
 			log.Fatalf("failed to cache user %d: %s", user.ID, err)
 		}
 	}
 
 	// Fetch user to ensure it is not thrown out when we go over the limit.
-	if _, _, ok := lru.Get(ctx, mem.S(strconv.Itoa(users[1].ID))); !ok {
+	if _, ok := lru.Get(ctx, mem.S(strconv.Itoa(users[1].ID))); !ok {
 		log.Fatalf("user with ID %d not found in cache!", users[1].ID)
 	}
 
 	newUser := User{ID: 5, Name: "Rainbox Gopher", Age: 1}
 
-	if err := lru.Set(ctx, mem.S(strconv.Itoa(newUser.ID)), newUser); err != nil {
+	if err := lru.Set(ctx, mem.S(strconv.Itoa(newUser.ID)), scache.Value(newUser)); err != nil {
 		log.Fatalf("failed to cache user %d: %s", newUser.ID, err)
 	}
 
@@ -367,13 +378,13 @@ func ExampleLRU_overflow() {
 	userIDs := getUserIDs(ctx)
 
 	for _, userID := range userIDs {
-		user, _, ok := lru.Get(ctx, mem.S(strconv.Itoa(userID)))
+		entry, ok := lru.Get(ctx, mem.S(strconv.Itoa(userID)))
 		if !ok {
 			fmt.Printf("user with ID %d not found in cache!\n", userID)
 			continue
 		}
 
-		fmt.Printf("%+v\n", user)
+		fmt.Printf("%+v\n", entry.Value)
 	}
 
 	// Output:
@@ -383,37 +394,4 @@ func ExampleLRU_overflow() {
 	// user with ID 3 not found in cache!
 	// {ID:4 Name:Grey Gopher Age:10}
 	// {ID:5 Name:Rainbox Gopher Age:1}
-}
-
-func ExampleLRU_withTTL() {
-	ctx := context.TODO()
-
-	lru := scache.NewLRUWithTTL[int](32, 100*time.Millisecond)
-
-	if err := lru.Set(ctx, mem.S("user:1:friends"), 1337); err != nil {
-		log.Fatalf("failed to cache users friends: %s", err)
-	}
-
-	friends, _, ok := lru.Get(ctx, mem.S("user:1:friends"))
-	if !ok {
-		fmt.Println("could not find total number of users friends in cache  :-(")
-		return
-	}
-
-	fmt.Printf("user 1 got %d friends\n", friends)
-
-	time.Sleep(100 * time.Millisecond) // ... later
-
-	friends, _, ok = lru.Get(ctx, mem.S("user:1:friends"))
-	if !ok {
-		fmt.Println("could not find total number of users friends in cache :-(")
-		return
-	}
-
-	fmt.Printf("user 1 got %d friends\n", friends)
-
-	// Output:
-	//
-	// user 1 got 1337 friends
-	// could not find total number of users friends in cache :-(
 }

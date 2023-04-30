@@ -3,12 +3,14 @@ package lookup
 import (
 	"context"
 	"errors"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/nussjustin/scache"
 	"go4.org/mem"
+
+	"github.com/nussjustin/scache"
 )
 
 // Cache implements a cache wrapper where on each cache miss the value will be looked
@@ -16,6 +18,12 @@ import (
 //
 // Cache explicitly does not implement the Cache interface.
 type Cache[T any] struct {
+	// NowFunc if set will be called instead of time.Now when determining the current time
+	// and for expiry checks.
+	//
+	// This is used for testing and must be set before calling any methods on the Cache.
+	NowFunc func() time.Time
+
 	opts Opts
 
 	c scache.Cache[T]
@@ -76,13 +84,13 @@ func NewCache[T any](c scache.Cache[T], f Func[T], opts *Opts) *Cache[T] {
 // specified in NewCache.
 //
 // When the lookup of a stale value fails, Get will continue to return the old value.
-func (l *Cache[T]) Get(ctx context.Context, key mem.RO) (val T, age time.Duration, ok bool) {
+func (l *Cache[T]) Get(ctx context.Context, key mem.RO) (view scache.EntryView[T], ok bool) {
 	hash := key.MapHash()
 	idx := hash & uint64(len(l.groups)-1)
 	return l.groups[idx].get(hash, key).wait(ctx)
 }
 
-func (l *Cache[T]) set(ctx context.Context, key mem.RO, val T, stats *Stats) {
+func (l *Cache[T]) set(ctx context.Context, key mem.RO, entry scache.Entry[T], stats *Stats) {
 	defer func() {
 		if v := recover(); v != nil {
 			stats.Panics++
@@ -92,7 +100,7 @@ func (l *Cache[T]) set(ctx context.Context, key mem.RO, val T, stats *Stats) {
 		}
 	}()
 
-	if err := l.c.Set(ctx, key, val); err != nil {
+	if err := l.c.Set(ctx, key, entry); err != nil {
 		stats.Errors++
 		if l.opts.SetErrorHandler != nil {
 			l.opts.SetErrorHandler(key, err)
@@ -124,10 +132,40 @@ func (l *Cache[T]) Stats() Stats {
 	return stats
 }
 
+func (l *Cache[T]) shouldRefresh(entry scache.EntryView[T]) bool {
+	if entry.ExpiresAt.IsZero() {
+		return false
+	}
+	d := l.opts.RefreshBeforeExpiry
+	if f := l.opts.RefreshBeforeExpiryJitterFunc; f != nil {
+		d += f(entry.Key)
+	}
+	return d > 0 && d >= l.until(entry.ExpiresAt)
+}
+
+func (l *Cache[T]) now() time.Time {
+	if l.NowFunc != nil {
+		return l.NowFunc()
+	}
+	return time.Now()
+}
+
+func (l *Cache[T]) until(t time.Time) time.Duration {
+	if t.IsZero() {
+		return time.Duration(math.MaxInt64)
+	}
+	// if we are using time.Now for getting the current time, we can avoid some overhead by calling
+	// time.Since directly instead of going through l.NowFunc() and calling .Sub()
+	if l.NowFunc == nil {
+		return time.Until(t)
+	}
+	return t.Sub(l.NowFunc())
+}
+
 // Func defines a function for looking up values that will be placed in a Cache.
 //
 // If err is ErrSkip the result will not be cached.
-type Func[T any] func(ctx context.Context, key mem.RO) (val T, err error)
+type Func[T any] func(ctx context.Context, key mem.RO) (entry scache.Entry[T], err error)
 
 // ErrSkip can be returned by a Func to indicate that the result should not be cached.
 var ErrSkip = errors.New("skipping result")
@@ -158,13 +196,14 @@ type Opts struct {
 	// If nil panics will be ignored.
 	PanicHandler func(key mem.RO, v any)
 
-	// RefreshAfter specifies the duration after which values in the cache will be treated
-	// as missing and refreshed.
+	// RefreshBeforeExpiry specifies the duration before a cache entries expires at which the entry will be
+	// treated as stale and refreshed.
 	//
-	// If RefreshAfterJitterFunc is not nil it's result will be added to the value of RefreshAfter
-	// before checking the age of a value.
+	// Cache entries for which no expiry was configured will never be refreshed.
 	//
-	// If the sum of RefreshAfter and the result of RefreshAfterJitterFunc is <= 0 no refresh will
+	// If RefreshBeforeExpiryJitterFunc is not nil it's result will be added to the value of RefreshBeforeExpiry.
+	//
+	// If the sum of RefreshBeforeExpiry and the result of RefreshBeforeExpiryJitterFunc is <= 0 no refresh will
 	// be triggered.
 	//
 	// If a refresh fails the Cache will keep serving the old value and retry the refresh the
@@ -173,19 +212,17 @@ type Opts struct {
 	// By default, a refresh will happen synchronously and the new value will be returned (unless
 	// there was an error). This can be changed using BackgroundRefresh. See BackgroundRefresh for
 	// more information.
-	RefreshAfter time.Duration
+	RefreshBeforeExpiry time.Duration
 
-	// RefreshAfterJitterFunc can be used to add jitter to the value specified in RefreshAfter.
+	// RefreshBeforeExpiryJitterFunc can be used to add jitter to the value specified in RefreshBeforeExpiry.
 	//
 	// This can be useful to avoid thundering herd problems when many entries need to be
 	// refreshed at the same time.
 	//
-	// The returned duration will be added to the value in RefreshAfter.
+	// The returned duration will be added to the value in RefreshBeforeExpiry.
 	//
-	// If nil no jitter will be added.
-	//
-	// See RefreshAfter for more details.
-	RefreshAfterJitterFunc func(key mem.RO) time.Duration
+	// See RefreshBeforeExpiry for more details.
+	RefreshBeforeExpiryJitterFunc func(key mem.RO) time.Duration
 
 	// SetErrorHandler will be called when updating the underlying Cache fails.
 	//
@@ -196,14 +233,6 @@ type Opts struct {
 	//
 	// If SetTimeout is <= 0 a default timeout of 250ms will be used.
 	SetTimeout time.Duration
-}
-
-func (o Opts) shouldRefresh(key mem.RO, age time.Duration) bool {
-	limit := o.RefreshAfter
-	if o.RefreshAfterJitterFunc != nil {
-		limit += o.RefreshAfterJitterFunc(key)
-	}
-	return limit > 0 && limit <= age
 }
 
 // Stats contains statistics about a Cache.
@@ -250,6 +279,7 @@ type lookupGroup[T any] struct {
 
 func (lg *lookupGroup[T]) add(hash uint64, key mem.RO) *lookupGroupEntry[T] {
 	lge := &lookupGroupEntry[T]{
+		cache: lg.cache,
 		group: lg,
 
 		hash: hash,
@@ -284,6 +314,7 @@ func (lg *lookupGroup[T]) remove(lge *lookupGroupEntry[T]) {
 }
 
 type lookupGroupEntry[T any] struct {
+	cache *Cache[T]
 	group *lookupGroup[T]
 	hash  uint64
 	key   mem.RO
@@ -294,10 +325,10 @@ type lookupGroupEntry[T any] struct {
 	fetchCtx lazyTimeoutContext
 	setCtx   lazyTimeoutContext
 
-	age    time.Duration
+	entry scache.EntryView[T]
+	ok    bool
+
 	closed bool
-	ok     bool
-	val    T
 }
 
 func (lge *lookupGroupEntry[T]) close() {
@@ -315,20 +346,20 @@ func (lge *lookupGroupEntry[T]) closeAndRemove() {
 
 func (lge *lookupGroupEntry[T]) handleErr(err error) {
 	lge.stats.Errors++
-	if lge.group.cache.opts.ErrorHandler != nil {
-		lge.group.cache.opts.ErrorHandler(lge.key, err)
+	if lge.cache.opts.ErrorHandler != nil {
+		lge.cache.opts.ErrorHandler(lge.key, err)
 	}
 }
 
 func (lge *lookupGroupEntry[T]) handlePanic(v any) {
 	lge.stats.Panics++
-	if lge.group.cache.opts.PanicHandler != nil {
-		lge.group.cache.opts.PanicHandler(lge.key, v)
+	if lge.cache.opts.PanicHandler != nil {
+		lge.cache.opts.PanicHandler(lge.key, v)
 	}
 }
 
 func (lge *lookupGroupEntry[T]) fetchCached(ctx context.Context) error {
-	if lge.val, lge.age, lge.ok = lge.group.cache.c.Get(ctx, lge.key); lge.ok {
+	if lge.entry, lge.ok = lge.cache.c.Get(ctx, lge.key); lge.ok {
 		return nil
 	}
 	return ctx.Err()
@@ -337,10 +368,18 @@ func (lge *lookupGroupEntry[T]) fetchCached(ctx context.Context) error {
 func (lge *lookupGroupEntry[T]) lookupAndCache(ctx context.Context) {
 	lge.stats.Lookups++
 
-	val, err := lge.group.cache.f(ctx, lge.key)
+	entry, err := lge.cache.f(ctx, lge.key)
 	if err != nil && !errors.Is(err, ErrSkip) {
 		lge.handleErr(err)
 		return
+	}
+
+	entry.Key = lge.key
+
+	now := lge.cache.now()
+
+	if entry.CreatedAt.IsZero() {
+		entry.CreatedAt = now
 	}
 
 	select {
@@ -348,7 +387,7 @@ func (lge *lookupGroupEntry[T]) lookupAndCache(ctx context.Context) {
 		// we are doing a background refresh and have already allowed the waiters to use the cached values.
 		// since there may still be concurrent waiters we must not be modifying lge here to avoid a race
 	default:
-		lge.val, lge.age, lge.ok = val, 0, true
+		lge.entry, lge.ok = entry.View(), true
 
 		// close manually so that waiters can return without having to wait for the cache to be updated
 		lge.close()
@@ -356,10 +395,10 @@ func (lge *lookupGroupEntry[T]) lookupAndCache(ctx context.Context) {
 
 	if lge.ok && err == nil {
 		setCtx := &lge.setCtx
-		setCtx.deadline = time.Now().Add(lge.group.cache.opts.SetTimeout)
+		setCtx.deadline = now.Add(lge.cache.opts.SetTimeout)
 		defer setCtx.cancel()
 
-		lge.group.cache.set(setCtx, lge.key, val, &lge.stats)
+		lge.cache.set(setCtx, lge.key, entry, &lge.stats)
 	}
 }
 
@@ -373,7 +412,7 @@ func (lge *lookupGroupEntry[T]) run() {
 	}()
 
 	ctx := &lge.fetchCtx
-	ctx.deadline = time.Now().Add(lge.group.cache.opts.Timeout)
+	ctx.deadline = lge.cache.now().Add(lge.cache.opts.Timeout)
 	defer ctx.cancel()
 
 	if err := lge.fetchCached(ctx); err != nil {
@@ -386,13 +425,13 @@ func (lge *lookupGroupEntry[T]) run() {
 	} else {
 		lge.stats.Hits++
 
-		if !lge.group.cache.opts.shouldRefresh(lge.key, lge.age) {
+		if !lge.cache.shouldRefresh(lge.entry) {
 			return
 		}
 
 		lge.stats.Refreshes++
 
-		if lge.group.cache.opts.BackgroundRefresh {
+		if lge.cache.opts.BackgroundRefresh {
 			lge.close()
 		}
 	}
@@ -400,12 +439,12 @@ func (lge *lookupGroupEntry[T]) run() {
 	lge.lookupAndCache(ctx)
 }
 
-func (lge *lookupGroupEntry[T]) wait(ctx context.Context) (val T, age time.Duration, ok bool) {
+func (lge *lookupGroupEntry[T]) wait(ctx context.Context) (entry scache.EntryView[T], ok bool) {
 	select {
 	case <-ctx.Done():
 		return
 	case <-lge.done:
-		return lge.val, lge.age, lge.ok
+		return lge.entry, lge.ok
 	}
 }
 

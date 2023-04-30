@@ -21,7 +21,7 @@ user := User{ID: 1, Name: "Gopher", Age: 12}
 
 lru := scache.NewLRU[User](32)
 
-if err := lru.Set(ctx, mem.S(strconv.Itoa(user.ID)), user); err != nil {
+if err := lru.Set(ctx, mem.S(strconv.Itoa(user.ID)), scache.Value(user)); err != nil {
     log.Fatalf("failed to cache user %d: %s", user.ID, err)
 }
 ```
@@ -31,13 +31,12 @@ Retrieving a value from the cache
 ```go
 userID := getUserID(ctx)
 
-// Ignore age of cache entry
-user, _, ok := lru.Get(ctx, mem.S(strconv.Itoa(userID)))
+entry, ok := lru.Get(ctx, mem.S(strconv.Itoa(userID)))
 if !ok {
     log.Fatalf("user with ID %d not found in cache", userID)
 }
 
-fmt.Printf("%+v\n", user)
+fmt.Printf("%+v\n", entry.Value)
 ```
 
 ### Lookup Cache
@@ -47,8 +46,8 @@ Initializing cache
 ```go
 c := lookup.NewCache[string](
 	scache.NewLRU[string](32),
-	func(ctx context.Context, key mem.RO) (val string, err error) {
-		return strings.ToUpper(key.StringCopy()), nil
+	func(ctx context.Context, key mem.RO) (entry scache.Entry[string], err error) {
+		return scache.Value(strings.ToUpper(key.StringCopy())), nil
 	},
 	&lookup.Opts{Timeout: 5*time.Second},
 )
@@ -57,8 +56,8 @@ c := lookup.NewCache[string](
 Looking up value
 
 ```go
-val, _, _ := c.Get(context.Background(), mem.S("hello"))
-if val != "HELLO" {
+entry, _ := c.Get(context.Background(), mem.S("hello"))
+if entry.Value != "HELLO" {
     panic("something went wrong... PANIC")
 }
 ```

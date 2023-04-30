@@ -2,6 +2,7 @@ package scache
 
 import (
 	"context"
+	"math"
 	"sync"
 	"time"
 
@@ -13,11 +14,12 @@ import (
 // from the cache.
 type LRU[T any] struct {
 	// NowFunc if set will be called instead of time.Now when determining the current time
-	// for age and expiry checks.
+	// and for expiry checks.
+	//
+	// This is used for testing and must be set before calling any methods on the Cache.
 	NowFunc func() time.Time
 
 	cap int
-	ttl time.Duration
 
 	mu         sync.Mutex
 	entries    map[uint64]*lruItem[T]
@@ -31,13 +33,11 @@ const lruFreeListLimit = 32
 type lruItem[T any] struct {
 	prev, next *lruItem[T]
 
-	key     mem.RO
-	keyHash uint64
-	val     T
-
-	added time.Time
-	ttl   time.Duration
+	hash uint64
+	view EntryView[T]
 }
+
+var _ Cache[any] = &LRU[any]{}
 
 // NewLRU returns a new fixed-cap, in-memory Cache implementation that can hold cap items.
 //
@@ -46,22 +46,13 @@ type lruItem[T any] struct {
 //
 // The returned Cache is safe for concurrent use.
 func NewLRU[T any](size int) *LRU[T] {
-	return NewLRUWithTTL[T](size, 0)
-}
-
-// NewLRUWithTTL is the same as NewLRU but also automatically adds a TTL to each key after
-// which a value will expire and lead to a Cache miss.
-//
-// If ttl is <= 0, no TTL is used. This is the same as using NewLRU.
-func NewLRUWithTTL[T any](size int, ttl time.Duration) *LRU[T] {
 	return &LRU[T]{
 		entries: make(map[uint64]*lruItem[T]),
 		cap:     size,
-		ttl:     ttl,
 	}
 }
 
-func (l *LRU[T]) addLocked(key mem.RO, val T, added time.Time) {
+func (l *LRU[T]) addLocked(view EntryView[T]) {
 	if l.free == nil {
 		// Don't allocate full length now to reduce memory usage
 		const lengthDiv = 2
@@ -81,11 +72,8 @@ func (l *LRU[T]) addLocked(key mem.RO, val T, added time.Time) {
 	l.free = item.next
 
 	*item = lruItem[T]{
-		key:     key,
-		keyHash: key.MapHash(),
-		val:     val,
-		added:   added,
-		ttl:     l.ttl,
+		hash: view.Key.MapHash(),
+		view: view,
 	}
 
 	item.next = l.head
@@ -95,11 +83,11 @@ func (l *LRU[T]) addLocked(key mem.RO, val T, added time.Time) {
 	} else {
 		l.head, l.tail = item, item
 	}
-	l.entries[item.keyHash] = item
+	l.entries[item.hash] = item
 }
 
 func (l *LRU[T]) deleteLocked(item *lruItem[T]) {
-	delete(l.entries, item.keyHash)
+	delete(l.entries, item.hash)
 	l.unmountLocked(item)
 
 	if l.freeCount < lruFreeListLimit {
@@ -142,15 +130,14 @@ func (l *LRU[T]) Cap() int {
 }
 
 // Get implements the Cache interface.
-func (l *LRU[T]) Get(ctx context.Context, key mem.RO) (val T, age time.Duration, ok bool) {
+func (l *LRU[T]) Get(_ context.Context, key mem.RO) (entry EntryView[T], ok bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	if item := l.entries[key.MapHash()]; item != nil {
-		age = l.since(item.added)
-		if item.ttl <= 0 || item.ttl > age {
+		if l.until(item.view.ExpiresAt) > 0 {
 			l.moveToFrontLocked(item)
-			return item.val, age, true
+			return item.view, true
 		}
 		l.deleteLocked(item)
 	}
@@ -166,50 +153,58 @@ func (l *LRU[T]) Len() int {
 }
 
 // Remove removes a given key from the cache and returns the old value if the cache contained the key.
-func (l *LRU[T]) Remove(ctx context.Context, key mem.RO) (val T, age time.Duration, ok bool) {
+func (l *LRU[T]) Remove(_ context.Context, key mem.RO) (entry EntryView[T], ok bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	if item := l.entries[key.MapHash()]; item != nil {
-		age = l.since(item.added)
-		if item.ttl <= 0 || item.ttl > age {
-			val, ok = item.val, true
-		}
+		entry, ok = item.view, true
 		l.deleteLocked(item)
 	}
+
 	return
 }
 
 // Set implements the Cache interface.
-func (l *LRU[T]) Set(ctx context.Context, key mem.RO, val T) error {
-	var now time.Time
-	if l.NowFunc != nil {
-		now = l.NowFunc()
-	} else {
-		now = time.Now()
+func (l *LRU[T]) Set(_ context.Context, key mem.RO, entry Entry[T]) error {
+	entry.Key = key
+
+	if entry.CreatedAt.IsZero() {
+		entry.CreatedAt = l.now()
 	}
+
+	view := entry.View()
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	if item := l.entries[key.MapHash()]; item != nil {
-		item.added = now
-		item.val = val
+		item.view = view
 		l.moveToFrontLocked(item)
 		return nil
 	}
 	if len(l.entries) >= l.cap {
 		l.deleteLocked(l.tail)
 	}
-	l.addLocked(key, val, now)
+	l.addLocked(view)
 	return nil
 }
 
-func (l *LRU[T]) since(t time.Time) time.Duration {
+func (l *LRU[T]) now() time.Time {
+	if l.NowFunc != nil {
+		return l.NowFunc()
+	}
+	return time.Now()
+}
+
+func (l *LRU[T]) until(t time.Time) time.Duration {
+	if t.IsZero() {
+		return time.Duration(math.MaxInt64)
+	}
 	// if we are using time.Now for getting the current time, we can avoid some overhead by calling
 	// time.Since directly instead of going through l.NowFunc() and calling .Sub()
 	if l.NowFunc == nil {
-		return time.Since(t)
+		return time.Until(t)
 	}
-	return l.NowFunc().Sub(t)
+	return t.Sub(l.NowFunc())
 }
