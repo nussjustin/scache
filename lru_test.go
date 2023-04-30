@@ -367,7 +367,7 @@ func ExampleLRU_overflow() {
 		log.Fatalf("user with ID %d not found in cache!", users[1].ID)
 	}
 
-	newUser := User{ID: 5, Name: "Rainbox Gopher", Age: 1}
+	newUser := User{ID: 5, Name: "Rainbow Gopher", Age: 1}
 
 	if err := lru.Set(ctx, mem.S(strconv.Itoa(newUser.ID)), scache.Value(newUser)); err != nil {
 		log.Fatalf("failed to cache user %d: %s", newUser.ID, err)
@@ -393,5 +393,5 @@ func ExampleLRU_overflow() {
 	// {ID:2 Name:Green Gopher Age:7}
 	// user with ID 3 not found in cache!
 	// {ID:4 Name:Grey Gopher Age:10}
-	// {ID:5 Name:Rainbox Gopher Age:1}
+	// {ID:5 Name:Rainbow Gopher Age:1}
 }
