@@ -175,6 +175,8 @@ func (s *slowCache[T]) Set(ctx context.Context, key mem.RO, entry scache.Entry[T
 
 func TestLookupCache(t *testing.T) {
 	t.Run("Error", func(t *testing.T) {
+		t.Parallel()
+
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -232,27 +234,33 @@ func TestLookupCache(t *testing.T) {
 	})
 
 	t.Run("Get Canceled", func(t *testing.T) {
+		t.Parallel()
+
 		t.Run("Canceled", func(t *testing.T) {
+			t.Parallel()
+
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
 
-			sc := &slowCache[string]{getDelay: 250 * time.Millisecond}
+			sc := &slowCache[string]{getDelay: 150 * time.Millisecond}
 			c := lookup.NewCache[string](sc, func(_ context.Context, _ mem.RO) (entry scache.Entry[string], err error) {
 				return scache.Value("world"), nil
-			}, &lookup.Opts{Timeout: 150 * time.Millisecond})
+			}, &lookup.Opts{Timeout: 100 * time.Millisecond})
 
 			assertCacheMiss[string](t, c, ctx, "hello")
 			assertStats(t, c, lookup.Stats{Errors: 1})
 		})
 
 		t.Run("Timeout", func(t *testing.T) {
+			t.Parallel()
+
 			ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 			defer cancel()
 
-			sc := &slowCache[string]{getDelay: 250 * time.Millisecond}
+			sc := &slowCache[string]{getDelay: 150 * time.Millisecond}
 			c := lookup.NewCache[string](sc, func(_ context.Context, _ mem.RO) (entry scache.Entry[string], err error) {
 				return scache.Value("world"), nil
-			}, &lookup.Opts{Timeout: 150 * time.Millisecond})
+			}, &lookup.Opts{Timeout: 100 * time.Millisecond})
 
 			assertCacheMiss[string](t, c, ctx, "hello")
 			assertStats(t, c, lookup.Stats{Errors: 1})
@@ -260,18 +268,18 @@ func TestLookupCache(t *testing.T) {
 	})
 
 	t.Run("Lookup Timeout", func(t *testing.T) {
+		t.Parallel()
+
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
 		lru := scache.NewLRU[string](4)
 
-		var lookupDelayMu sync.Mutex
-		lookupDelay := 150 * time.Millisecond
+		var lookupDelay atomic.Value
+		lookupDelay.Store(25 * time.Millisecond)
 
 		lookupFunc := func(ctx context.Context, key mem.RO) (entry scache.Entry[string], err error) {
-			lookupDelayMu.Lock()
-			delay := lookupDelay
-			lookupDelayMu.Unlock()
+			delay := lookupDelay.Load().(time.Duration)
 
 			select {
 			case <-ctx.Done():
@@ -281,7 +289,7 @@ func TestLookupCache(t *testing.T) {
 			return scache.Value(strings.ToUpper(key.StringCopy())), nil
 		}
 
-		c := lookup.NewCache[string](lru, lookupFunc, &lookup.Opts{Timeout: 250 * time.Millisecond})
+		c := lookup.NewCache[string](lru, lookupFunc, &lookup.Opts{Timeout: 50 * time.Millisecond})
 
 		{
 			ctx, cancel := context.WithTimeout(ctx, time.Millisecond)
@@ -297,15 +305,15 @@ func TestLookupCache(t *testing.T) {
 
 		assertCacheGet[string](t, c, ctx, "hello3", "HELLO3")
 
-		lookupDelayMu.Lock()
-		lookupDelay = 350 * time.Millisecond
-		lookupDelayMu.Unlock()
+		lookupDelay.Store(100 * time.Millisecond)
 
 		assertCacheMiss[string](t, c, ctx, "hello4")
 		assertStats(t, c, lookup.Stats{Errors: 1, Lookups: 4, Misses: 4})
 	})
 
 	t.Run("ErrSkip", func(t *testing.T) {
+		t.Parallel()
+
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -323,6 +331,8 @@ func TestLookupCache(t *testing.T) {
 	})
 
 	t.Run("No Update on Hit", func(t *testing.T) {
+		t.Parallel()
+
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -337,6 +347,8 @@ func TestLookupCache(t *testing.T) {
 	})
 
 	t.Run("Panic", func(t *testing.T) {
+		t.Parallel()
+
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -393,6 +405,8 @@ func TestLookupCache(t *testing.T) {
 	})
 
 	t.Run("Refresh", func(t *testing.T) {
+		t.Parallel()
+
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -425,6 +439,8 @@ func TestLookupCache(t *testing.T) {
 	})
 
 	t.Run("Refresh Error", func(t *testing.T) {
+		t.Parallel()
+
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -479,6 +495,8 @@ func TestLookupCache(t *testing.T) {
 	})
 
 	t.Run("Refresh In Background", func(t *testing.T) {
+		t.Parallel()
+
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -517,6 +535,8 @@ func TestLookupCache(t *testing.T) {
 	})
 
 	t.Run("Refresh Jitter", func(t *testing.T) {
+		t.Parallel()
+
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -560,6 +580,8 @@ func TestLookupCache(t *testing.T) {
 	})
 
 	t.Run("Set Timeout", func(t *testing.T) {
+		t.Parallel()
+
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -608,6 +630,8 @@ func TestLookupCache(t *testing.T) {
 	})
 
 	t.Run("Simple", func(t *testing.T) {
+		t.Parallel()
+
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
