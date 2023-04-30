@@ -4,6 +4,7 @@ linters:
     - contextcheck
     - exhaustivestruct # reports &Opts{} as an error
     - exhaustruct # reports &Opts{} as an error
+    - gci
     - gochecknoglobals
     - godox
     - golint # does not work with generics
