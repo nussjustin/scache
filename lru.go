@@ -26,6 +26,7 @@ type LRU[T any] struct {
 	head, tail *lruItem[T]
 	free       *lruItem[T]
 	freeCount  int
+	weight     int
 }
 
 const lruFreeListLimit = 32
@@ -39,16 +40,17 @@ type lruItem[T any] struct {
 
 var _ Cache[any] = &LRU[any]{}
 
-// NewLRU returns a new fixed-cap, in-memory Cache implementation that can hold cap items.
+// NewLRU returns a new fixed-cap, in-memory Cache implementation that holds entries up to
+// the given maximum sum of weight (see in [Entry.Weight]).
 //
 // Once the cache is full, adding new items will cause the least recently used items to be
-// evicted from the cache.
+// evicted from the cache until enough space is available.
 //
 // The returned Cache is safe for concurrent use.
-func NewLRU[T any](size int) *LRU[T] {
+func NewLRU[T any](maxWeight int) *LRU[T] {
 	return &LRU[T]{
 		entries: make(map[uint64]*lruItem[T]),
-		cap:     size,
+		cap:     maxWeight,
 	}
 }
 
@@ -84,11 +86,15 @@ func (l *LRU[T]) addLocked(view EntryView[T]) {
 		l.head, l.tail = item, item
 	}
 	l.entries[item.hash] = item
+
+	l.weight += view.Weight
 }
 
 func (l *LRU[T]) deleteLocked(item *lruItem[T]) {
 	delete(l.entries, item.hash)
 	l.unmountLocked(item)
+
+	l.weight -= item.view.Weight
 
 	if l.freeCount < lruFreeListLimit {
 		*item = lruItem[T]{next: l.free}
@@ -166,7 +172,16 @@ func (l *LRU[T]) Remove(_ context.Context, key mem.RO) (entry EntryView[T], ok b
 }
 
 // Set implements the Cache interface.
+//
+// If entry.Weight is <0 or >l.Cap(), the entry will be discarded without an error.
 func (l *LRU[T]) Set(_ context.Context, key mem.RO, entry Entry[T]) error {
+	switch {
+	case entry.Weight == 0:
+		entry.Weight = 1
+	case entry.Weight < 0 || entry.Weight > l.cap:
+		return nil
+	}
+
 	entry.Key = key
 
 	if entry.CreatedAt.IsZero() {
@@ -183,11 +198,19 @@ func (l *LRU[T]) Set(_ context.Context, key mem.RO, entry Entry[T]) error {
 		l.moveToFrontLocked(item)
 		return nil
 	}
-	if len(l.entries) >= l.cap {
+	for l.weight+entry.Weight > l.cap {
 		l.deleteLocked(l.tail)
 	}
 	l.addLocked(view)
 	return nil
+}
+
+// Len returns the current total weight of all entries in the Cache.
+func (l *LRU[T]) Weight() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return l.weight
 }
 
 func (l *LRU[T]) now() time.Time {

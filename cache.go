@@ -40,6 +40,9 @@ type Entry[T any] struct {
 
 	// Value contains the value that will be cached.
 	Value T
+
+	// Weight is an optional value that can be used by caches to order, prioritize and limit stored entries.
+	Weight int
 }
 
 // Value returns a new Entry for the given value. This is a shortcut for Entry[T]{Value: v}.
@@ -54,6 +57,7 @@ func (e Entry[T]) View() EntryView[T] {
 		ExpiresAt: e.ExpiresAt,
 		Key:       e.Key,
 		Value:     e.Value,
+		Weight:    e.Weight,
 	}
 
 	if len(e.Tags) > 0 {
@@ -80,6 +84,9 @@ type EntryView[T any] struct {
 
 	// Private so that users can not change the slice
 	tags []mem.RO
+
+	// Weight is an optional value that can be used by caches to order, prioritize and limit stored entries.
+	Weight int
 }
 
 // Tags calls f for each tag associated with the view. If f returns false, the method returns.

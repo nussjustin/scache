@@ -181,6 +181,61 @@ func TestLRU(t *testing.T) {
 		assertCacheMiss[string](t, c, ctx, "foo")
 		assertLen(t, 0, c)
 	})
+
+	t.Run("Weight", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		c := scache.NewLRU[any](4)
+
+		assertContents := func(keys ...string) {
+			t.Helper()
+			for _, key := range keys {
+				assertCacheGet[any](t, c, ctx, key, key)
+			}
+			assertLen(t, len(keys), c)
+		}
+
+		assertWeight := func(want int) {
+			t.Helper()
+			if got := c.Weight(); want != got {
+				t.Fatalf("wanted cache with weight %d, got weight %d", want, got)
+			}
+		}
+
+		key1, key2, key3, key4, key5, key6 := "key1", "key2", "key3", "key4", "key5", "key6"
+
+		assertWeight(0)
+
+		// 3 Entries with total weight 3
+		assertCacheSetEntry[any](t, c, ctx, key1, scache.Entry[any]{Value: key1, Weight: 0})
+		assertCacheSetEntry[any](t, c, ctx, key2, scache.Entry[any]{Value: key2, Weight: 1})
+		assertCacheSetEntry[any](t, c, ctx, key3, scache.Entry[any]{Value: key3, Weight: 1})
+		assertContents(key1, key2, key3)
+		assertWeight(3)
+
+		// New entry with weight 2 brings us to 5, so we should evict the oldest one
+		assertCacheSetEntry[any](t, c, ctx, key4, scache.Entry[any]{Value: key4, Weight: 2})
+		assertContents(key2, key3, key4)
+		assertWeight(4)
+
+		// Again, weight of 2 but on a full cache. This time eviction the oldest entry should not be enough.
+		assertCacheSetEntry[any](t, c, ctx, key5, scache.Entry[any]{Value: key5, Weight: 2})
+		assertContents(key4, key5)
+		assertWeight(4)
+
+		// Touch key4 in order to bring it to the front of the LRU
+		assertCacheGet[any](t, c, ctx, key4, key4)
+		assertCacheSetEntry[any](t, c, ctx, key6, scache.Entry[any]{Value: key6, Weight: 1})
+		assertContents(key4, key6)
+		assertWeight(3)
+
+		// Negative weights and weights over the capacity should be ignored
+		assertCacheSetEntry[any](t, c, ctx, key1, scache.Entry[any]{Value: key1, Weight: -1})
+		assertCacheSetEntry[any](t, c, ctx, key2, scache.Entry[any]{Value: key2, Weight: 5})
+		assertContents(key4, key6)
+		assertWeight(3)
+	})
 }
 
 func TestLRU_Remove(t *testing.T) {
