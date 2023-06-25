@@ -77,6 +77,36 @@ func assertCacheSetError[T any](tb testing.TB, c scache.Cache[T], ctx context.Co
 	}
 }
 
+type kvPair[T any] struct {
+	key   string
+	value T
+}
+
+func assertValues[T comparable](tb testing.TB, views []scache.EntryView[T], expected []*kvPair[T]) {
+	tb.Helper()
+
+	if got, want := len(views), len(expected); got != len(expected) {
+		tb.Errorf("got %d views, but expected %d", got, want)
+	}
+
+	for i, pair := range expected {
+		got := views[i]
+
+		switch {
+		case pair == nil && got.CreatedAt.IsZero():
+			// match
+		case pair == nil:
+			tb.Errorf("got unexpected value %v for key %q", got.Value, got.Key.StringCopy())
+		case got.Key.EqualString(pair.key) && got.Value == pair.value:
+			// match
+		case got.Key.EqualString(pair.key):
+			tb.Errorf("got value %v for key %q, expected %v", got.Value, pair.key, pair.value)
+		default:
+			tb.Errorf("got key %q at index %d, expected %q", got.Key.StringCopy(), i, pair.key)
+		}
+	}
+}
+
 func assertNoError(tb testing.TB, err error) {
 	tb.Helper()
 
@@ -93,6 +123,98 @@ func (ft *fakeTime) Add(d time.Duration) {
 
 func (ft *fakeTime) Now() time.Time {
 	return time.Unix(0, atomic.LoadInt64((*int64)(ft)))
+}
+
+type fakeCache struct {
+	getCalls int
+}
+
+func (f *fakeCache) Get(_ context.Context, key mem.RO) (entry scache.EntryView[int], ok bool) {
+	f.getCalls++
+	return scache.Entry[int]{CreatedAt: time.Now(), Key: key}.View(), true
+}
+
+func (f *fakeCache) Set(_ context.Context, _ mem.RO, _ scache.Entry[int]) error {
+	return nil
+}
+
+type fakeCacheWithGetMany struct {
+	fakeCache
+	getManyCalls int
+}
+
+func (f *fakeCacheWithGetMany) GetMany(_ context.Context, keys ...mem.RO) []scache.EntryView[int] {
+	f.getManyCalls++
+	s := make([]scache.EntryView[int], len(keys))
+	for i, key := range keys {
+		s[i] = scache.Entry[int]{CreatedAt: time.Now(), Key: key, Value: i}.View()
+	}
+	return s
+}
+
+func TestGetMany(t *testing.T) {
+	t.Run("NoKeys", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		c := &fakeCacheWithGetMany{}
+
+		views := scache.GetMany[int](ctx, c)
+
+		if c.getCalls != 0 {
+			t.Errorf("got %d calls to Get, expected 0", c.getCalls)
+		}
+
+		if c.getManyCalls != 0 {
+			t.Errorf("got %d calls to GetMany, expected 0", c.getManyCalls)
+		}
+
+		if views != nil {
+			t.Errorf("got non-nil result: %v", views)
+		}
+	})
+
+	t.Run("Fallback", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		c := &fakeCache{}
+
+		views := scache.GetMany[int](ctx, c, mem.S("key1"), mem.S("key2"), mem.S("key3"))
+
+		if c.getCalls != 3 {
+			t.Errorf("got %d calls to Get, expected 3", c.getCalls)
+		}
+
+		assertValues(t, views, []*kvPair[int]{
+			{key: "key1", value: 0},
+			{key: "key2", value: 0},
+			{key: "key3", value: 0},
+		})
+	})
+
+	t.Run("Interface", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		c := &fakeCacheWithGetMany{}
+
+		views := scache.GetMany[int](ctx, c, mem.S("key1"), mem.S("key2"), mem.S("key3"))
+
+		if c.getCalls != 0 {
+			t.Errorf("got %d calls to Get, expected 0", c.getCalls)
+		}
+
+		if c.getManyCalls != 1 {
+			t.Errorf("got %d calls to GetMany, expected 1", c.getManyCalls)
+		}
+
+		assertValues(t, views, []*kvPair[int]{
+			{key: "key1", value: 0},
+			{key: "key2", value: 1},
+			{key: "key3", value: 2},
+		})
+	})
 }
 
 func TestLockedCache(t *testing.T) {

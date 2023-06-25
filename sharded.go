@@ -51,6 +51,37 @@ func (s *ShardedCache[T]) Get(ctx context.Context, key mem.RO) (entry EntryView[
 	return s.Shard(key).Get(ctx, key)
 }
 
+// GetMany returns multiple entries at once. See the global [GetMany] function for more details.
+func (s *ShardedCache[T]) GetMany(ctx context.Context, keys ...mem.RO) []EntryView[T] {
+	preAlloc := 4
+	if preAlloc > len(keys) {
+		preAlloc = len(keys)
+	}
+
+	shards := make(map[int][]mem.RO, preAlloc)
+	keyIdxByHash := make(map[uint64]int, len(keys))
+
+	for i, key := range keys {
+		hash := key.MapHash()
+		shardIdx := int(hash % uint64(len(s.shards)))
+
+		shards[shardIdx] = append(shards[shardIdx], key)
+		keyIdxByHash[hash] = i
+	}
+
+	entries := make([]EntryView[T], len(keys))
+
+	for shardIdx, shardKeys := range shards {
+		for _, entry := range GetMany[T](ctx, s.shards[shardIdx], shardKeys...) {
+			if !entry.CreatedAt.IsZero() {
+				entries[keyIdxByHash[entry.Key.MapHash()]] = entry
+			}
+		}
+	}
+
+	return entries
+}
+
 // Set implements the Cache interface.
 //
 // This is a shorthand for calling

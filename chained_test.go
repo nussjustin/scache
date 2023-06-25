@@ -84,6 +84,54 @@ func TestChainedCache(t *testing.T) {
 		assertCacheGet[string](t, c1, ctx, "keyA", "valA")
 		assertCacheMiss[string](t, c3, ctx, "keyB")
 	})
+
+	t.Run("GetMany", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		c1 := scache.NewLRU[int](3)
+		assertCacheSet[int](t, c1, ctx, "key1", 1)
+
+		c2 := scache.NewLRU[int](3)
+		assertCacheSet[int](t, c2, ctx, "key1", 10)
+		assertCacheSet[int](t, c2, ctx, "key2", 20)
+
+		c3 := scache.NewLRU[int](3)
+		assertCacheSet[int](t, c3, ctx, "key1", 100)
+		assertCacheSet[int](t, c3, ctx, "key2", 200)
+		assertCacheSet[int](t, c3, ctx, "key3", 300)
+
+		cc := scache.NewChainedCache[int](c1, c2, c3).(interface {
+			GetMany(context.Context, ...mem.RO) []scache.EntryView[int]
+		})
+
+		views := cc.GetMany(ctx, mem.S("key1"), mem.S("key2"), mem.S("key3"), mem.S("key4"))
+
+		assertValues(t, views, []*kvPair[int]{
+			{key: "key1", value: 1},
+			{key: "key2", value: 20},
+			{key: "key3", value: 300},
+			nil,
+		})
+	})
+
+	t.Run("GetMany when empty", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		cc := scache.NewChainedCache[int]().(interface {
+			GetMany(context.Context, ...mem.RO) []scache.EntryView[int]
+		})
+
+		views := cc.GetMany(ctx, mem.S("1"), mem.S("2"), mem.S("3"), mem.S("4"))
+
+		assertValues(t, views, []*kvPair[int]{
+			nil,
+			nil,
+			nil,
+			nil,
+		})
+	})
 }
 
 func NewRedisCache[T any]() scache.Cache[T] { return nil }

@@ -2,6 +2,7 @@ package scache_test
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"testing"
 
@@ -65,6 +66,37 @@ func TestShardedCache(t *testing.T) {
 		assertCacheGet[int](t, c, ctx, key, j)
 		assertCacheGet[int](t, c.Shard(mem.S(key)), ctx, key, j)
 	}
+}
+
+func TestShardedCache_GetMany(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	c, err := scache.NewShardedCache[int](4, func(int) scache.Cache[int] {
+		return scache.NewLRU[int](100)
+	})
+
+	if err != nil {
+		t.Fatalf("failed to create shareded cache: %s", err)
+	}
+
+	keys := make([]mem.RO, 10)
+	expected := make([]*kvPair[int], len(keys))
+
+	for i := range keys {
+		key := fmt.Sprintf("key%d", i)
+		keys[i] = mem.S(key)
+		expected[i] = &kvPair[int]{key: key, value: i}
+		assertCacheSet[int](t, c, ctx, key, i)
+	}
+
+	// Missing key
+	keys = append(keys, mem.S("key999"))
+	expected = append(expected, nil)
+
+	views := c.GetMany(ctx, keys...)
+
+	assertValues(t, views, expected)
 }
 
 func ExampleNewShardedCache() {

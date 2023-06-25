@@ -20,6 +20,48 @@ type Cache[T any] interface {
 	Set(ctx context.Context, key mem.RO, entry Entry[T]) error
 }
 
+// GetMany retrieves items for multiple keys at once.
+//
+// For each key, a single EntryView is returned. If a key is not found, the EntryView
+// will be empty.
+//
+// The keys slice may not be modified by GetMany.
+//
+// If the given Cache implements a method
+//
+//	GetMany(context.Context, ...mem.RO) []EntryView[T]
+//
+// it will be called instead.
+func GetMany[T any](ctx context.Context, cache Cache[T], keys ...mem.RO) []EntryView[T] {
+	if len(keys) == 0 {
+		return nil
+	}
+
+	if mc, ok := cache.(interface {
+		GetMany(context.Context, ...mem.RO) []EntryView[T]
+	}); ok {
+		return mc.GetMany(ctx, keys...)
+	}
+
+	return getManyFallback(ctx, cache, keys)
+}
+
+func getManyFallback[T any](ctx context.Context, cache Cache[T], keys []mem.RO) []EntryView[T] {
+	if len(keys) == 0 {
+		return nil
+	}
+
+	entries := make([]EntryView[T], len(keys))
+
+	for i, key := range keys {
+		if entry, ok := cache.Get(ctx, key); ok {
+			entries[i] = entry
+		}
+	}
+
+	return entries
+}
+
 // Entry defines a new entry to be added to a cache.
 type Entry[T any] struct {
 	// CreatedAt contains the time at which the entry was created.
@@ -67,7 +109,7 @@ type EntryView[T any] struct {
 	// CreatedAt contains the time at which the entry was created.
 	CreatedAt time.Time
 
-	// ExpiresAt defines an optional expiration time for the Entry after which it should be deleted.
+	// ExpiresAt contains the optional expiration time for the Entry.
 	ExpiresAt time.Time
 
 	// Key is the key under which the entry was saved.
