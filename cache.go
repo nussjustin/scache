@@ -52,20 +52,14 @@ func Value[T any](v T) Entry[T] {
 
 // View returns a new EntryView for e with the given key and creation time.
 func (e Entry[T]) View() EntryView[T] {
-	v := EntryView[T]{
+	return EntryView[T]{
 		CreatedAt: e.CreatedAt,
 		ExpiresAt: e.ExpiresAt,
 		Key:       e.Key,
 		Value:     e.Value,
 		Weight:    e.Weight,
+		tags:      e.Tags,
 	}
-
-	if len(e.Tags) > 0 {
-		v.tags = make([]mem.RO, len(e.Tags))
-		copy(v.tags, e.Tags)
-	}
-
-	return v
 }
 
 // EntryView provides read-only view of a cache entry.
