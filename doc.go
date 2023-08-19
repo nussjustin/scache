@@ -1,3 +1,2 @@
-// Package scache implements a simple LRU cache together with various convenience wrappers
-// around Caches including a wrapper for sharding access to multiple Caches.
+// Package scache implements a simple cache interface with support for cache tags and lookup caching.
 package scache

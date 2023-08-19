@@ -1,20 +1,57 @@
 linters:
-  enable-all: true
-  disable:
+  enable:
+    # Default linters, specified for clarity
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    # Custom linters
+    - asasalint
+    - bodyclose
     - contextcheck
-    - exhaustivestruct # reports &Opts{} as an error
-    - exhaustruct # reports &Opts{} as an error
+    - dupl
+    - dupword
+    - durationcheck
+    - errchkjson
+    - exhaustive
+    - exportloopref
     - gci
-    - gochecknoglobals
-    - godox
-    - golint # does not work with generics
-    - ireturn # reports generic types as interfaces
-    - lll
-    - nlreturn
-    - nonamedreturns
-    - varnamelen
-    - wrapcheck
-    - wsl
+    - gocheckcompilerdirectives
+    - gochecknoinits
+    - goconst
+    - godot
+    - gofumpt
+    - gosec
+    - gosmopolitan
+    - loggercheck
+    - makezero
+    - misspell
+    - musttag
+    - nilerr
+    - noctx
+    - nolintlint
+    - nosprintfhostport
+    - prealloc
+    - revive
+    - rowserrcheck
+    - sqlclosecheck
+    - tagalign
+    - tagliatelle
+    - testpackage
+    - thelper
+    - tparallel
+    - unconvert
+    - wastedassign
+linters-settings:
+  gci:
+    sections:
+      - standard
+      - default
+      - prefix(github.com/nussjustin/feature)
+      - blank
+      - dot
 run:
   skip-files:
     - _test.go$

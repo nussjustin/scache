@@ -3,256 +3,790 @@ package scache_test
 import (
 	"context"
 	"errors"
-	"reflect"
-	"strconv"
+	"io"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"go4.org/mem"
-
 	"github.com/nussjustin/scache"
 )
 
-func assertCacheGet[T any](tb testing.TB, c scache.Cache[T], ctx context.Context, key string, want T) {
-	tb.Helper()
+func TestCache_Get(t *testing.T) {
+	t.Run("Common", func(t *testing.T) {
+		ctx := testContext(t)
 
-	got, ok := c.Get(ctx, mem.S(key))
-	if !ok {
-		tb.Fatalf("failed to get key %q", key)
-	}
+		b := newTestBackend[int](t)
+		_ = b.Set(ctx, "first", scache.Value(1))
+		_ = b.Set(ctx, "second", scache.Value(2, "tag1"))
+		_ = b.Set(ctx, "third", scache.Value(3, "tag1", "tag2"))
 
-	if !reflect.DeepEqual(want, got.Value) {
-		tb.Fatalf("failed to assert value: want %v got %v", want, got)
-	}
+		c := scache.New[int](b, nil)
+
+		assertContains(t, c, ctx, "first", nil, 1)
+		assertContains(t, c, ctx, "second", []string{"tag1"}, 2)
+		assertContains(t, c, ctx, "third", []string{"tag1", "tag2"}, 3)
+
+		b.assertAccessCount("first", 1)
+		b.assertAccessCount("second", 1)
+		b.assertAccessCount("third", 1)
+
+		_ = b.Set(ctx, "third", scache.Value(4, "tag2", "tag3", "tag4"))
+
+		assertContains(t, c, ctx, "first", nil, 1)
+		assertContains(t, c, ctx, "second", []string{"tag1"}, 2)
+		assertContains(t, c, ctx, "third", []string{"tag2", "tag3", "tag4"}, 4)
+
+		b.assertAccessCount("first", 2)
+		b.assertAccessCount("second", 2)
+		b.assertAccessCount("third", 1)
+
+		b.setError("second", io.EOF)
+
+		item, err := c.Get(ctx, "second")
+		assertError(t, err, io.EOF)
+		assertMiss(t, item, "second", nil, 0)
+	})
+
+	t.Run("Staleness", func(t *testing.T) {
+		ctx := testContext(t)
+
+		b := newTestBackend[int](t)
+		_ = b.Set(ctx, "first", scache.Value(1))
+
+		clock := newFakeClock()
+
+		c := scache.New[int](b, &scache.CacheOpts{
+			StaleDuration: time.Minute,
+			SinceFunc:     clock.since,
+		})
+
+		assertContains(t, c, ctx, "first", nil, 1)
+
+		b.setExpiresAt("first", clock.now)
+		assertContains(t, c, ctx, "first", nil, 1)
+
+		clock.advance(30 * time.Second)
+
+		assertContains(t, c, ctx, "first", nil, 1)
+
+		clock.advance(30 * time.Second)
+
+		item, err := c.Get(ctx, "first")
+		assertNoError(t, err)
+		assertMiss(t, item, "first", nil, 0)
+	})
 }
 
-func assertCacheGetWithCreatedAt[T any](tb testing.TB, c scache.Cache[T], ctx context.Context, key string, want T, wantCreatedAt time.Time) {
-	tb.Helper()
+func TestCache_GetMany(t *testing.T) {
+	t.Run("Generic", func(t *testing.T) {
+		ctx := testContext(t)
 
-	got, ok := c.Get(ctx, mem.S(key))
-	if !ok {
-		tb.Fatalf("failed to get key %q", key)
-	}
+		b := newTestBackend[int](t)
 
-	if !reflect.DeepEqual(want, got.Value) {
-		tb.Fatalf("failed to assert value: want %v got %v", want, got)
-	}
+		clock := newFakeClock()
 
-	if !wantCreatedAt.Equal(got.CreatedAt) {
-		tb.Fatalf("failed to assert gotAge: want at least %s got %s", wantCreatedAt, got.CreatedAt)
-	}
-}
+		c := scache.New[int](b, &scache.CacheOpts{
+			SinceFunc:     clock.since,
+			StaleDuration: time.Minute,
+		})
 
-func assertCacheMiss[T any](tb testing.TB, c scache.Cache[T], ctx context.Context, key string) {
-	tb.Helper()
-
-	if got, ok := c.Get(ctx, mem.S(key)); ok {
-		tb.Fatalf("failed to assert cache miss: got %v", got)
-	}
-}
-
-func assertCacheSet[T any](tb testing.TB, c scache.Cache[T], ctx context.Context, key string, val T) {
-	tb.Helper()
-
-	assertCacheSetEntry(tb, c, ctx, key, scache.Value(val))
-}
-
-func assertCacheSetEntry[T any](tb testing.TB, c scache.Cache[T], ctx context.Context, key string, entry scache.Entry[T]) {
-	tb.Helper()
-
-	if err := c.Set(ctx, mem.S(key), entry); err != nil {
-		tb.Fatalf("failed to set key %q to value %v: %s", key, entry.Value, err)
-	}
-}
-
-func assertCacheSetError[T any](tb testing.TB, c scache.Cache[T], ctx context.Context, key string, val T, wantErr error) {
-	tb.Helper()
-
-	if err := c.Set(ctx, mem.S(key), scache.Value(val)); err == nil {
-		tb.Fatalf("failed to assert error for key %q: got value %v", key, val)
-	} else if !errors.Is(err, wantErr) {
-		tb.Fatalf("failed to assert error for key %q: want %q got %q", key, wantErr, err)
-	}
-}
-
-type kvPair[T any] struct {
-	key   string
-	value T
-}
-
-func assertValues[T comparable](tb testing.TB, views []scache.EntryView[T], expected []*kvPair[T]) {
-	tb.Helper()
-
-	if got, want := len(views), len(expected); got != len(expected) {
-		tb.Errorf("got %d views, but expected %d", got, want)
-	}
-
-	for i, pair := range expected {
-		got := views[i]
-
-		switch {
-		case pair == nil && got.CreatedAt.IsZero():
-			// match
-		case pair == nil:
-			tb.Errorf("got unexpected value %v for key %q", got.Value, got.Key.StringCopy())
-		case got.Key.EqualString(pair.key) && got.Value == pair.value:
-			// match
-		case got.Key.EqualString(pair.key):
-			tb.Errorf("got value %v for key %q, expected %v", got.Value, pair.key, pair.value)
-		default:
-			tb.Errorf("got key %q at index %d, expected %q", got.Key.StringCopy(), i, pair.key)
-		}
-	}
-}
-
-func assertNoError(tb testing.TB, err error) {
-	tb.Helper()
-
-	if err != nil {
-		tb.Fatalf("failed to assert no error: got %v", err)
-	}
-}
-
-type fakeTime time.Duration
-
-func (ft *fakeTime) Add(d time.Duration) {
-	atomic.AddInt64((*int64)(ft), int64(d))
-}
-
-func (ft *fakeTime) Now() time.Time {
-	return time.Unix(0, atomic.LoadInt64((*int64)(ft)))
-}
-
-type fakeCache struct {
-	getCalls int
-}
-
-func (f *fakeCache) Get(_ context.Context, key mem.RO) (entry scache.EntryView[int], ok bool) {
-	f.getCalls++
-	return scache.Entry[int]{CreatedAt: time.Now(), Key: key}.View(), true
-}
-
-func (f *fakeCache) Set(_ context.Context, _ mem.RO, _ scache.Entry[int]) error {
-	return nil
-}
-
-type fakeCacheWithGetMany struct {
-	fakeCache
-	getManyCalls int
-}
-
-func (f *fakeCacheWithGetMany) GetMany(_ context.Context, keys ...mem.RO) []scache.EntryView[int] {
-	f.getManyCalls++
-	s := make([]scache.EntryView[int], len(keys))
-	for i, key := range keys {
-		s[i] = scache.Entry[int]{CreatedAt: time.Now(), Key: key, Value: i}.View()
-	}
-	return s
-}
-
-func TestGetMany(t *testing.T) {
-	t.Run("NoKeys", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		c := &fakeCacheWithGetMany{}
-
-		views := scache.GetMany[int](ctx, c)
-
-		if c.getCalls != 0 {
-			t.Errorf("got %d calls to Get, expected 0", c.getCalls)
+		{
+			items, err := c.GetMany(ctx)
+			assertNoError(t, err)
+			assertLen(t, items, 0)
 		}
 
-		if c.getManyCalls != 0 {
-			t.Errorf("got %d calls to GetMany, expected 0", c.getManyCalls)
+		_ = b.Set(ctx, "first", scache.Value(1))
+		_ = b.Set(ctx, "second", scache.Value(2, "tag1"))
+		_ = b.Set(ctx, "third", scache.Value(3, "tag1", "tag2"))
+
+		b.assertContains("first", nil, 1)
+		b.assertAccessCount("first", 0)
+
+		{
+			items, err := c.GetMany(ctx, "first", "second", "third", "fourth")
+			assertNoError(t, err)
+			assertLen(t, items, 4)
+
+			b.assertAccessCount("first", 1)
+			b.assertAccessCount("second", 1)
+			b.assertAccessCount("third", 1)
+
+			assertHit(t, items[0], "first", nil, 1)
+			assertHit(t, items[1], "second", []string{"tag1"}, 2)
+			assertHit(t, items[2], "third", []string{"tag1", "tag2"}, 3)
+			assertMiss(t, items[3], "fourth", nil, 0)
 		}
 
-		if views != nil {
-			t.Errorf("got non-nil result: %v", views)
+		b.setError("second", io.EOF)
+
+		{
+			items, err := c.GetMany(ctx, "first", "second", "third", "fourth")
+			assertError(t, err, io.EOF)
+			assertLen(t, items, 0)
+
+			b.assertAccessCount("first", 2)
+			b.assertAccessCount("second", 1)
+			b.assertAccessCount("third", 1)
+		}
+
+		b.setExpiresAt("first", clock.now.Add(time.Minute))
+		b.setExpiresAt("third", clock.now.Add(2*time.Minute))
+		clock.advance(2 * time.Minute)
+
+		{
+			items, err := c.GetMany(ctx, "first", "third")
+			assertNoError(t, err)
+			assertLen(t, items, 2)
+
+			assertMiss(t, items[0], "first", nil, 0)
+			assertHit(t, items[1], "third", []string{"tag1", "tag2"}, 3)
 		}
 	})
 
-	t.Run("Fallback", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+	t.Run("Optimized", func(t *testing.T) {
+		ctx := testContext(t)
 
-		c := &fakeCache{}
+		b := newTestBackendWithGetMany[int](t)
 
-		views := scache.GetMany[int](ctx, c, mem.S("key1"), mem.S("key2"), mem.S("key3"))
+		clock := newFakeClock()
 
-		if c.getCalls != 3 {
-			t.Errorf("got %d calls to Get, expected 3", c.getCalls)
+		c := scache.New[int](b, &scache.CacheOpts{
+			SinceFunc:     clock.since,
+			StaleDuration: time.Minute,
+		})
+
+		{
+			items, err := c.GetMany(ctx)
+			assertNoError(t, err)
+			assertLen(t, items, 0)
+
+			b.assertGetManyCount(0)
 		}
 
-		assertValues(t, views, []*kvPair[int]{
-			{key: "key1", value: 0},
-			{key: "key2", value: 0},
-			{key: "key3", value: 0},
+		_ = b.Set(ctx, "first", scache.Value(1))
+		_ = b.Set(ctx, "second", scache.Value(2, "tag1"))
+		_ = b.Set(ctx, "third", scache.Value(3, "tag1", "tag2"))
+
+		b.assertContains("first", nil, 1)
+		b.assertAccessCount("first", 0)
+
+		{
+			items, err := c.GetMany(ctx, "first", "second", "third", "fourth")
+			assertNoError(t, err)
+			assertLen(t, items, 4)
+
+			b.assertAccessCount("first", 1)
+			b.assertAccessCount("second", 1)
+			b.assertAccessCount("third", 1)
+			b.assertAccessCount("fourth", 1)
+			b.assertGetManyCount(1)
+
+			assertHit(t, items[0], "first", nil, 1)
+			assertHit(t, items[1], "second", []string{"tag1"}, 2)
+			assertHit(t, items[2], "third", []string{"tag1", "tag2"}, 3)
+			assertMiss(t, items[3], "fourth", nil, 0)
+		}
+
+		b.setError("second", io.EOF)
+
+		{
+			items, err := c.GetMany(ctx, "first", "second", "third", "fourth")
+			assertError(t, err, io.EOF)
+			assertLen(t, items, 0)
+
+			b.assertAccessCount("first", 2)
+			b.assertAccessCount("second", 1)
+			b.assertAccessCount("third", 1)
+			b.assertAccessCount("fourth", 1)
+			b.assertGetManyCount(2)
+		}
+
+		b.setExpiresAt("first", clock.now)
+		clock.advance(time.Hour)
+
+		// Our implementation does not check for staleness, so nothing should change
+		{
+			items, err := c.GetMany(ctx, "first", "third")
+			assertNoError(t, err)
+			assertLen(t, items, 2)
+
+			assertHit(t, items[0], "first", nil, 1)
+			assertHit(t, items[1], "third", []string{"tag1", "tag2"}, 3)
+		}
+	})
+}
+
+func TestCache_Load(t *testing.T) {
+	t.Run("Cached", func(t *testing.T) {
+		t.Run("Error", func(t *testing.T) {
+			t.Run("Default", func(t *testing.T) {
+				ctx := testContext(t)
+
+				b := newTestBackend[int](t)
+				b.setError("error", io.EOF)
+
+				c := scache.New[int](b, nil)
+
+				v, err := c.Load(ctx, "error", func(context.Context, string) (scache.Item[int], error) {
+					panic("unreachable")
+				})
+
+				assertError(t, err, io.EOF)
+				assertZero(t, v.Value)
+			})
+
+			t.Run("Ignored", func(t *testing.T) {
+				ctx := testContext(t)
+
+				b := newTestBackend[int](t)
+				b.setError("error", io.EOF)
+
+				c := scache.New[int](b, &scache.CacheOpts{IgnoreGetErrors: true})
+
+				const want = 1234
+
+				item, err := c.Load(ctx, "error", func(context.Context, string) (scache.Item[int], error) {
+					return scache.Value(want), nil
+				})
+
+				assertNoError(t, err)
+				assertMiss(t, item, "hit", nil, want)
+			})
+		})
+
+		t.Run("Hit", func(t *testing.T) {
+			ctx := testContext(t)
+
+			const want = 1234
+
+			b := newTestBackend[int](t)
+			_ = b.Set(ctx, "hit", scache.Value(want))
+
+			c := scache.New[int](b, nil)
+
+			item, err := c.Load(ctx, "hit", func(context.Context, string) (scache.Item[int], error) {
+				panic("unreachable")
+			})
+
+			assertNoError(t, err)
+			assertHit(t, item, "hit", nil, want)
 		})
 	})
 
-	t.Run("Interface", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+	t.Run("Loader", func(t *testing.T) {
+		t.Run("Error", func(t *testing.T) {
+			t.Run("Miss", func(t *testing.T) {
+				ctx := testContext(t)
 
-		c := &fakeCacheWithGetMany{}
+				b := newTestBackend[int](t)
 
-		views := scache.GetMany[int](ctx, c, mem.S("key1"), mem.S("key2"), mem.S("key3"))
+				c := scache.New[int](b, nil)
 
-		if c.getCalls != 0 {
-			t.Errorf("got %d calls to Get, expected 0", c.getCalls)
-		}
+				item, err := c.Load(ctx, "error", func(context.Context, string) (scache.Item[int], error) {
+					return scache.Item[int]{}, io.EOF
+				})
 
-		if c.getManyCalls != 1 {
-			t.Errorf("got %d calls to GetMany, expected 1", c.getManyCalls)
-		}
+				assertError(t, err, io.EOF)
+				assertMiss(t, item, "error", nil, 0)
+			})
 
-		assertValues(t, views, []*kvPair[int]{
-			{key: "key1", value: 0},
-			{key: "key2", value: 1},
-			{key: "key3", value: 2},
+			t.Run("Stale", func(t *testing.T) {
+				ctx := testContext(t)
+
+				clock := newFakeClock()
+
+				b := newTestBackend[int](t)
+				_ = b.Set(ctx, "stale", scache.Value(1234))
+				b.setExpiresAt("stale", clock.now.Add(time.Minute+time.Second))
+
+				clock.advance(2 * time.Minute)
+
+				c := scache.New[int](b, &scache.CacheOpts{StaleDuration: time.Minute, SinceFunc: clock.since})
+
+				item, err := c.Load(ctx, "stale", func(context.Context, string) (scache.Item[int], error) {
+					return scache.Item[int]{}, io.EOF
+				})
+
+				assertError(t, err, io.EOF)
+				assertHit(t, item, "stale", nil, 1234)
+			})
+		})
+
+		t.Run("Panic", func(t *testing.T) {
+			ctx := testContext(t)
+
+			b := newTestBackend[int](t)
+
+			c := scache.New[int](b, nil)
+
+			assertPanic(t, func() {
+				_, _ = c.Load(ctx, "error", func(context.Context, string) (scache.Item[int], error) {
+					panic("panic")
+				})
+			}, "panic")
+
+			item, err := b.Get(ctx, "panic")
+			assertNoError(t, err)
+			assertMiss(t, item, "panic", nil, 0)
+		})
+
+		t.Run("Loaded", func(t *testing.T) {
+			ctx := testContext(t)
+
+			b := newTestBackend[int](t)
+
+			var count int
+
+			c := scache.New[int](b, nil)
+
+			// First load
+			{
+				item, err := c.Load(ctx, "loaded", func(_ context.Context, key string) (scache.Item[int], error) {
+					assertEquals(t, key, "loaded")
+					count++
+					return scache.Value(count), nil
+				})
+
+				assertNoError(t, err)
+				assertEquals(t, item.Value, 1)
+				assertEquals(t, count, 1)
+
+				b.assertContains("loaded", nil, 1)
+				b.assertAccessCount("loaded", 0)
+			}
+
+			// Cached value
+			{
+				item, err := c.Load(ctx, "loaded", func(context.Context, string) (scache.Item[int], error) {
+					panic("unreachable")
+				})
+
+				assertNoError(t, err)
+				assertEquals(t, item.Value, 1)
+
+				b.assertContains("loaded", nil, 1)
+				b.assertAccessCount("loaded", 1)
+			}
+
+			b.remove("loaded")
+
+			// Second load
+			{
+				item, err := c.Load(ctx, "loaded", func(_ context.Context, key string) (scache.Item[int], error) {
+					assertEquals(t, key, "loaded")
+					count++
+					return scache.Value(count), nil
+				})
+
+				assertNoError(t, err)
+				assertEquals(t, item.Value, 2)
+				assertEquals(t, count, 2)
+
+				b.assertContains("loaded", nil, 2)
+				b.assertAccessCount("loaded", 0)
+			}
+		})
+
+		t.Run("Tags", func(t *testing.T) {
+			ctx := testContext(t)
+
+			b := newTestBackend[int](t)
+
+			c := scache.New[int](b, nil)
+
+			// Simple
+			{
+				item, err := c.Load(ctx, "tagged", func(ctx context.Context, _ string) (scache.Item[int], error) {
+					scache.Tag(ctx, "tag2")
+					scache.Tags(ctx, "tag3", "tag4")
+					return scache.Value(1, "tag1", "tag3"), nil
+				})
+
+				assertNoError(t, err)
+				assertMiss(t, item, "tagged", []string{"tag1", "tag2", "tag3", "tag4"}, 1)
+
+				b.assertContains("tagged", []string{"tag1", "tag2", "tag3", "tag4"}, 1)
+			}
+
+			// Nested
+			{
+				item, err := c.Load(ctx, "outer", func(ctx context.Context, _ string) (scache.Item[int], error) {
+					scache.Tag(ctx, "outer2")
+
+					item, err := c.Load(ctx, "inner", func(ctx context.Context, _ string) (scache.Item[int], error) {
+						scache.Tag(ctx, "inner2")
+						scache.Tags(ctx, "inner3", "inner4")
+						return scache.Value(1, "inner1", "inner3"), nil
+					})
+
+					assertNoError(t, err)
+
+					scache.Tags(ctx, "outer3", "outer4")
+					return scache.Value(item.Value+1, "outer1", "outer3"), nil
+				})
+
+				assertNoError(t, err)
+				assertMiss(
+					t,
+					item,
+					"outer",
+					[]string{"inner1", "inner2", "inner3", "inner4", "outer1", "outer2", "outer3", "outer4"},
+					2,
+				)
+
+				b.assertContains("inner", []string{"inner1", "inner2", "inner3", "inner4"}, 1)
+				b.assertContains(
+					"outer",
+					[]string{"inner1", "inner2", "inner3", "inner4", "outer1", "outer2", "outer3", "outer4"},
+					2,
+				)
+			}
 		})
 	})
 }
 
-func TestLockedCache(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+func BenchmarkCache_Load(b *testing.B) {
+	b.Run("Miss", func(b *testing.B) {
+		b.Run("NoTags", func(b *testing.B) {
+			ctx := testContext(b)
 
-	const keysN = 64
+			c := scache.New[int](noopBackend[int]{}, nil)
 
-	c := scache.NewLRU[string](keysN)
+			b.ReportAllocs()
+
+			for i := 0; i < b.N; i++ {
+				_, _ = c.Load(ctx, "miss", func(context.Context, string) (scache.Item[int], error) {
+					return scache.Value(0), nil
+				})
+			}
+		})
+
+		b.Run("Tags", func(b *testing.B) {
+			ctx := testContext(b)
+
+			c := scache.New[int](noopBackend[int]{}, nil)
+
+			b.ReportAllocs()
+
+			for i := 0; i < b.N; i++ {
+				_, _ = c.Load(ctx, "miss", func(ctx context.Context, _ string) (scache.Item[int], error) {
+					scache.Tag(ctx, "tag2")
+					scache.Tags(ctx, "tag3", "tag4")
+					return scache.Value(0, "tag1", "tag3"), nil
+				})
+			}
+		})
+	})
+
+	b.Run("Hit", func(b *testing.B) {
+		ctx := testContext(b)
+
+		c := scache.New[int](newTestBackend[int](b), nil)
+		assertNoError(b, c.Set(ctx, "hit", scache.Value(1)))
+
+		b.ReportAllocs()
+
+		for i := 0; i < b.N; i++ {
+			_, _ = c.Load(ctx, "hit", func(context.Context, string) (scache.Item[int], error) {
+				panic("unreachable")
+			})
+		}
+	})
+}
+
+type loadSyncTest[T comparable] struct {
+	backend    scache.Backend[T]
+	opts       scache.CacheOpts
+	beforeWait func(causeFunc context.CancelCauseFunc)
+	load       scache.Loader[T]
+	key        string
+	expected   loadSyncTestResult[T]
+}
+
+type loadSyncTestResult[T comparable] struct {
+	item      scache.Item[T]
+	err       error
+	recovered any
+}
+
+func assertLoadSyncResult[T comparable](tb testing.TB, got loadSyncTestResult[T], want loadSyncTestResult[T]) {
+	tb.Helper()
+
+	assertItem(tb, got.item, "synced", want.item)
+	assertEquals(tb, got.err, want.err)
+	assertEquals(tb, got.recovered, want.recovered)
+}
+
+func (l loadSyncTest[T]) run(tb testing.TB, ctx context.Context) {
+	tb.Helper()
+
+	loadCtx, loadCtxCancel := context.WithCancelCause(context.Background())
+	defer loadCtxCancel(errCleanup)
+
+	opts := l.opts
+	opts.LoadSyncContextFunc = func() (context.Context, context.CancelFunc) {
+		return loadCtx, func() { loadCtxCancel(errors.New("finished")) }
+	}
+
+	c := scache.New[T](l.backend, &opts)
+
+	key := l.key
+	if key == "" {
+		key = "synced" // easier to spot during debugging
+	}
+
+	setLoadSyncBarrier(c, 2)
 
 	var wg sync.WaitGroup
-	for i := 0; i < keysN; i++ {
+
+	loadInBackground := func(
+		ctx context.Context,
+		key string,
+		load scache.Loader[T],
+	) <-chan loadSyncTestResult[T] {
 		wg.Add(1)
-		go func(i int) {
+
+		resC := make(chan loadSyncTestResult[T], 1)
+
+		go func() {
 			defer wg.Done()
-			assertCacheSet[string](t, c, ctx, strconv.Itoa(i), strconv.Itoa(i))
-		}(i)
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					resC <- loadSyncTestResult[T]{recovered: recovered}
+				}
+			}()
+
+			item, err := c.LoadSync(ctx, key, load)
+
+			resC <- loadSyncTestResult[T]{item: item, err: err}
+		}()
+
+		return resC
 	}
+
+	result1C := loadInBackground(ctx, key, l.load)
+	result2C := loadInBackground(ctx, key, l.load)
+
+	if l.beforeWait != nil {
+		l.beforeWait(loadCtxCancel)
+	}
+
 	wg.Wait()
 
-	if n := c.Len(); keysN != n {
-		t.Fatalf("wanted %d entries in cache, got %d", keysN, n)
+	var result1, result2 loadSyncTestResult[T]
+
+	select {
+	case result1 = <-result1C:
+	default:
+		tb.Error("no result received for first goroutine")
+		return
 	}
 
-	for i := 0; i < keysN; i++ {
-		assertCacheGet[string](t, c, ctx, strconv.Itoa(i), strconv.Itoa(i))
+	select {
+	case result2 = <-result2C:
+	default:
+		tb.Error("no result received for second goroutine")
+		return
 	}
+
+	assertLoadSyncResult(tb, result1, l.expected)
+	assertLoadSyncResult(tb, result2, l.expected)
 }
 
-func TestNoopCache(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+func TestCache_LoadSync(t *testing.T) {
+	t.Run("Cached", func(t *testing.T) {
+		t.Run("Error", func(t *testing.T) {
+			t.Run("Default", func(t *testing.T) {
+				customErr := errors.New("custom err")
 
-	const key = "foo"
+				loadSyncTest[int]{
+					backend: newBlockingBackend[int](),
+					beforeWait: func(cancel context.CancelCauseFunc) {
+						cancel(customErr)
+					},
+					expected: loadSyncTestResult[int]{err: customErr},
+				}.run(t, testContext(t))
+			})
 
-	c := scache.NewNoopCache[string]()
+			t.Run("Ignored", func(t *testing.T) {
+				loadSyncTest[int]{
+					opts:    scache.CacheOpts{IgnoreGetErrors: true},
+					backend: newBlockingBackend[int](),
+					load: func(context.Context, string) (scache.Item[int], error) {
+						return scache.Value(1), nil
+					},
+					beforeWait: func(cancel context.CancelCauseFunc) {
+						cancel(nil)
+					},
+					expected: loadSyncTestResult[int]{item: scache.Value(1)},
+				}.run(t, testContext(t))
+			})
+		})
 
-	assertCacheMiss[string](t, c, ctx, key)
-	assertCacheSet[string](t, c, ctx, key, key)
-	assertCacheMiss[string](t, c, ctx, key)
+		t.Run("Hit", func(t *testing.T) {
+			b := newTestBackend[int](t)
+			_ = b.Set(nil, "synced", scache.Value(1234))
+
+			loadSyncTest[int]{
+				backend:  b,
+				expected: loadSyncTestResult[int]{item: hit(1234)},
+			}.run(t, testContext(t))
+		})
+	})
+
+	t.Run("Loader", func(t *testing.T) {
+		t.Run("Error", func(t *testing.T) {
+			t.Run("Miss", func(t *testing.T) {
+				customErr := errors.New("custom err")
+
+				loadSyncTest[int]{
+					backend:  noopBackend[int]{},
+					expected: loadSyncTestResult[int]{err: customErr},
+					load: func(context.Context, string) (scache.Item[int], error) {
+						return scache.Value(0), customErr
+					},
+				}.run(t, testContext(t))
+			})
+
+			t.Run("Stale", func(t *testing.T) {
+				b := newTestBackend[int](t)
+				_ = b.Set(nil, "synced", scache.Value(1234))
+				b.setExpiresAt("synced", time.Now().Add(-time.Hour))
+
+				customErr := errors.New("custom err")
+
+				loadSyncTest[int]{
+					opts:     scache.CacheOpts{StaleDuration: 3 * time.Hour},
+					backend:  b,
+					expected: loadSyncTestResult[int]{item: hit(1234), err: customErr},
+					load: func(context.Context, string) (scache.Item[int], error) {
+						return scache.Value(0), customErr
+					},
+				}.run(t, testContext(t))
+			})
+		})
+
+		t.Run("Panic", func(t *testing.T) {
+			customErr := errors.New("custom err")
+
+			loadSyncTest[int]{
+				backend:  noopBackend[int]{},
+				expected: loadSyncTestResult[int]{recovered: customErr},
+				load: func(context.Context, string) (scache.Item[int], error) {
+					panic(customErr)
+				},
+			}.run(t, testContext(t))
+		})
+
+		t.Run("Loaded", func(t *testing.T) {
+			var counter atomic.Int64
+
+			load := func(context.Context, string) (scache.Item[int], error) {
+				n := counter.Add(1)
+				return scache.Value(int(n)), nil
+			}
+
+			ctx := testContext(t)
+
+			b := newTestBackend[int](t)
+
+			loadSyncTest[int]{
+				backend:  b,
+				expected: loadSyncTestResult[int]{item: scache.Value(1)},
+				load:     load,
+			}.run(t, ctx)
+			b.assertAccessCount("synced", 0)
+			assertEquals(t, counter.Load(), 1)
+
+			loadSyncTest[int]{
+				backend:  b,
+				expected: loadSyncTestResult[int]{item: hit(1)},
+				load:     load,
+			}.run(t, ctx)
+			b.assertAccessCount("synced", 1)
+			assertEquals(t, counter.Load(), 1)
+
+			b.remove("synced")
+
+			loadSyncTest[int]{
+				backend:  b,
+				expected: loadSyncTestResult[int]{item: scache.Value(2)},
+				load:     load,
+			}.run(t, ctx)
+			b.assertAccessCount("synced", 0)
+			assertEquals(t, counter.Load(), 2)
+		})
+
+		t.Run("Tags", func(t *testing.T) {
+			ctx := testContext(t)
+
+			b := newTestBackend[int](t)
+
+			load := func(ctx context.Context, _ string) (scache.Item[int], error) {
+				loadSyncTest[int]{
+					backend: b,
+					key:     "outer",
+					expected: loadSyncTestResult[int]{
+						item: scache.Value(2,
+							"inner1", "inner2", "inner3", "inner4",
+							"outer1", "outer2", "outer3", "outer4",
+						),
+					},
+					load: func(ctx context.Context, _ string) (scache.Item[int], error) {
+						scache.Tag(ctx, "outer2")
+						scache.Tags(ctx, "outer3", "outer4")
+
+						loadSyncTest[int]{
+							backend: b,
+							key:     "inner",
+							expected: loadSyncTestResult[int]{
+								item: scache.Value(2, "inner1", "inner2", "inner3", "inner4"),
+							},
+							load: func(ctx context.Context, _ string) (scache.Item[int], error) {
+								scache.Tag(ctx, "inner2")
+								scache.Tags(ctx, "inner3", "inner4")
+
+								return scache.Value(2, "inner1", "inner4"), nil
+							},
+						}.run(t, ctx)
+
+						return scache.Value(2, "outer1", "outer4"), nil
+					},
+				}.run(t, ctx)
+
+				return scache.Value(0, "manual"), nil
+			}
+
+			item, err := scache.New[int](b, nil).Load(ctx, "no-key", load)
+
+			assertNoError(t, err)
+			assertItem(t, item, "no-key", scache.Item[int]{
+				Tags: []string{"inner1", "inner2", "inner3", "inner4", "manual", "outer1", "outer2", "outer3", "outer4"},
+			})
+		})
+	})
+}
+
+// TODO: Benchmark LoadSync
+
+func TestCache_Set(t *testing.T) {
+	ctx := testContext(t)
+
+	b := newTestBackend[int](t)
+
+	thirdTags := []string{"tag1", "tag2"}
+
+	c := scache.New[int](b, nil)
+
+	_ = c.Set(ctx, "first", scache.Value(1))
+	_ = c.Set(ctx, "second", scache.Value(2, "tag1"))
+	_ = c.Set(ctx, "third", scache.Value(3, thirdTags...))
+
+	thirdTags[1] = "tag0"
+
+	b.assertContains("first", nil, 1)
+	b.assertContains("second", []string{"tag1"}, 2)
+	b.assertContains("third", []string{"tag1", "tag2"}, 3)
 }

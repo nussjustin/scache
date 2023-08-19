@@ -2,232 +2,156 @@ package scache
 
 import (
 	"context"
-	"math"
 	"sync"
 	"time"
-
-	"go4.org/mem"
 )
 
-// LRU implements a fixed-capacity Cache that will automatically remove the least recently
-// used cache item once the cache is full and which also allows for manually removing items
-// from the cache.
+// LRU implements an in-memory cache [Backend] using an implementation of an LRU algorithm.
+//
+// The implementation supports weights.
+//
+// Expired items are not automatically removed.
 type LRU[T any] struct {
-	// NowFunc if set will be called instead of time.Now when determining the current time
-	// and for expiry checks.
-	//
-	// This is used for testing and must be set before calling any methods on the Cache.
-	NowFunc func() time.Time
-
-	cap int
-
-	mu         sync.Mutex
-	entries    map[uint64]*lruItem[T]
-	head, tail *lruItem[T]
-	free       *lruItem[T]
-	freeCount  int
-	weight     int
+	mu          sync.Mutex
+	m           map[string]*lruItem[T]
+	head, tail  *lruItem[T]
+	cap, weight uint
 }
-
-const lruFreeListLimit = 32
 
 type lruItem[T any] struct {
+	key        string
+	item       Item[T]
 	prev, next *lruItem[T]
-
-	hash uint64
-	view EntryView[T]
 }
 
-var _ Cache[any] = &LRU[any]{}
-
-// NewLRU returns a new fixed-cap, in-memory Cache implementation that holds entries up to
-// the given maximum sum of weight (see in [Entry.Weight]).
-//
-// Once the cache is full, adding new items will cause the least recently used items to be
-// evicted from the cache until enough space is available.
-//
-// The returned Cache is safe for concurrent use.
-func NewLRU[T any](maxWeight int) *LRU[T] {
-	return &LRU[T]{
-		entries: make(map[uint64]*lruItem[T]),
-		cap:     maxWeight,
-	}
+// NewLRU returns an in-memory cache [Backend] using an implementation of an LRU algorithm.
+func NewLRU[T any](size uint) *LRU[T] {
+	return &LRU[T]{m: make(map[string]*lruItem[T]), cap: size}
 }
 
-func (l *LRU[T]) addLocked(view EntryView[T]) {
-	if l.free == nil {
-		// Don't allocate full length now to reduce memory usage
-		const lengthDiv = 2
+// Delete removes the entry with the given key from the cache.
+func (l *LRU[T]) Delete(ctx context.Context, key string) error {
+	_ = ctx
 
-		free := make([]lruItem[T], lruFreeListLimit/lengthDiv)
-		freeCount := len(free)
-
-		for i := range free[:freeCount-1] {
-			free[i].next = &free[i+1]
-		}
-
-		l.free = &free[0]
-		l.freeCount = freeCount
-	}
-
-	item := l.free
-	l.free = item.next
-
-	*item = lruItem[T]{
-		hash: view.Key.MapHash(),
-		view: view,
-	}
-
-	item.next = l.head
-	if l.head != nil {
-		l.head.prev = item
-		l.head = item
-	} else {
-		l.head, l.tail = item, item
-	}
-	l.entries[item.hash] = item
-
-	l.weight += view.Weight
-}
-
-func (l *LRU[T]) deleteLocked(item *lruItem[T]) {
-	delete(l.entries, item.hash)
-	l.unmountLocked(item)
-
-	l.weight -= item.view.Weight
-
-	if l.freeCount < lruFreeListLimit {
-		*item = lruItem[T]{next: l.free}
-		l.free = item
-		l.freeCount++
-	}
-}
-
-func (l *LRU[T]) moveToFrontLocked(item *lruItem[T]) {
-	if l.head == item {
-		return
-	}
-	l.unmountLocked(item)
-	if l.head != nil {
-		item.next, l.head.prev = l.head, item
-	}
-	l.head = item
-}
-
-func (l *LRU[T]) unmountLocked(item *lruItem[T]) {
-	if l.head == item {
-		l.head = item.next
-	}
-	if l.tail == item {
-		l.tail = item.prev
-	}
-	if item.next != nil {
-		item.next.prev = item.prev
-	}
-	if item.prev != nil {
-		item.prev.next = item.next
-	}
-	item.next, item.prev = nil, nil
-}
-
-// Cap returns the maximum number of items that can be cached.
-func (l *LRU[T]) Cap() int {
-	return l.cap
-}
-
-// Get implements the Cache interface.
-func (l *LRU[T]) Get(_ context.Context, key mem.RO) (entry EntryView[T], ok bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if item := l.entries[key.MapHash()]; item != nil {
-		if l.until(item.view.ExpiresAt) > 0 {
-			l.moveToFrontLocked(item)
-			return item.view, true
-		}
-		l.deleteLocked(item)
-	}
-	return
-}
-
-// Len returns the number of items in the Cache.
-func (l *LRU[T]) Len() int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	return len(l.entries)
-}
-
-// Remove removes a given key from the cache and returns the old value if the cache contained the key.
-func (l *LRU[T]) Remove(_ context.Context, key mem.RO) (entry EntryView[T], ok bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	if item := l.entries[key.MapHash()]; item != nil {
-		entry, ok = item.view, true
-		l.deleteLocked(item)
-	}
-
-	return
-}
-
-// Set implements the Cache interface.
-//
-// If entry.Weight is <0 or >l.Cap(), the entry will be discarded without an error.
-func (l *LRU[T]) Set(_ context.Context, key mem.RO, entry Entry[T]) error {
-	switch {
-	case entry.Weight == 0:
-		entry.Weight = 1
-	case entry.Weight < 0 || entry.Weight > l.cap:
+	item := l.m[key]
+	if item == nil {
 		return nil
 	}
 
-	entry.Key = key
-
-	if entry.CreatedAt.IsZero() {
-		entry.CreatedAt = l.now()
-	}
-
-	view := entry.View()
-
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	if item := l.entries[key.MapHash()]; item != nil {
-		item.view = view
-		l.moveToFrontLocked(item)
-		return nil
-	}
-	for l.weight+entry.Weight > l.cap {
-		l.deleteLocked(l.tail)
-	}
-	l.addLocked(view)
+	l.removeLocked(item)
 	return nil
 }
 
-// Len returns the current total weight of all entries in the Cache.
-func (l *LRU[T]) Weight() int {
+// Get implements the [Backend] interface.
+func (l *LRU[T]) Get(ctx context.Context, key string) (Item[T], error) {
+	_ = ctx
+
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	return l.weight
+	item := l.m[key]
+	if item == nil {
+		return Item[T]{}, nil
+	}
+
+	l.detachLocked(item)
+	l.attachLocked(item)
+
+	return item.item, nil
 }
 
-func (l *LRU[T]) now() time.Time {
-	if l.NowFunc != nil {
-		return l.NowFunc()
-	}
-	return time.Now()
+// Len returns the number of entries currently in the cache.
+func (l *LRU[T]) Len() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.m)
 }
 
-func (l *LRU[T]) until(t time.Time) time.Duration {
-	if t.IsZero() {
-		return time.Duration(math.MaxInt64)
+// Set implements the [Backend] interface.
+//
+// If the weight of the item is greater than the size of the LRU, the item will be discarded.
+func (l *LRU[T]) Set(ctx context.Context, key string, item Item[T]) error {
+	_ = ctx
+
+	item.Weight = max(1, item.Weight)
+
+	if item.Weight > l.cap {
+		return nil
 	}
-	// if we are using time.Now for getting the current time, we can avoid some overhead by calling
-	// time.Since directly instead of going through l.NowFunc() and calling .Sub()
-	if l.NowFunc == nil {
-		return time.Until(t)
+
+	item.CachedAt = time.Now()
+	item.Hit = true
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	var newItem *lruItem[T]
+
+	if oldItem := l.m[key]; oldItem != nil {
+		l.removeLocked(oldItem)
+		newItem = oldItem
 	}
-	return t.Sub(l.NowFunc())
+
+	// guaranteed to finish since we checked that our item fits into the total capacity
+	for l.weight+item.Weight > l.cap {
+		tail := l.tail
+		l.removeLocked(tail)
+		newItem = tail
+	}
+
+	if newItem == nil {
+		newItem = &lruItem[T]{}
+	}
+
+	*newItem = lruItem[T]{key: key, item: item}
+
+	l.addLocked(newItem)
+
+	return nil
+}
+
+func (l *LRU[T]) addLocked(item *lruItem[T]) {
+	l.attachLocked(item)
+	l.weight += item.item.Weight
+	l.m[item.key] = item
+}
+
+func (l *LRU[T]) removeLocked(item *lruItem[T]) {
+	l.detachLocked(item)
+	l.weight -= item.item.Weight
+	delete(l.m, item.key)
+}
+
+func (l *LRU[T]) attachLocked(item *lruItem[T]) {
+	item.prev = nil
+	item.next = l.head
+
+	if l.head != nil {
+		l.head.prev = item
+	} else {
+		l.tail = item
+	}
+
+	l.head = item
+}
+
+func (l *LRU[T]) detachLocked(item *lruItem[T]) {
+	if l.head == item {
+		l.head = item.next
+	}
+
+	if l.tail == item {
+		l.tail = item.prev
+	}
+
+	if item.prev != nil {
+		item.prev.next = item.next
+	}
+
+	if item.next != nil {
+		item.next.prev = item.prev
+	}
 }

@@ -1,0 +1,15 @@
+on: [push, pull_request]
+name: Vulnerability Check
+jobs:
+  govulncheck:
+    strategy:
+      matrix:
+        go-version: [1.21.x]
+        platform: [ubuntu-latest]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Run govulncheck
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version-input: ${{ matrix.go-version }}
+          go-package: ./...
