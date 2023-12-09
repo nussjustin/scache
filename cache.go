@@ -259,8 +259,6 @@ func (c *Cache[T]) Load(ctx context.Context, key string, load Loader[T]) (Item[T
 //
 // Any panic raised in load will be passed on to the goroutines waiting on the result.
 func (c *Cache[T]) LoadSync(ctx context.Context, key string, load Loader[T]) (Item[T], error) {
-	var loadCtx context.Context
-	var cancel context.CancelFunc
 	var runOnce bool
 
 	c.syncMu.Lock()
@@ -287,7 +285,7 @@ func (c *Cache[T]) LoadSync(ctx context.Context, key string, load Loader[T]) (It
 				close(once.done)
 			}()
 
-			loadCtx, cancel = c.opts.LoadSyncContextFunc()
+			loadCtx, cancel := c.opts.LoadSyncContextFunc()
 			defer cancel()
 
 			once.item, once.err = c.load(loadCtx, key, load)
@@ -390,7 +388,7 @@ type Item[T any] struct {
 	// This may not be supported by all caches.
 	ExpiresAt time.Time
 
-	// Hit is true if the value was found in the cache, even if may be stale (ExpiresAt is in the past).
+	// Hit is true if the value was found in the cache, even if it may be stale (ExpiresAt is in the past).
 	//
 	// This is ignored when saving items to the cache.
 	Hit bool
