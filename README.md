@@ -101,7 +101,7 @@ func getUser(ctx context.Context, id string) (*User, error) {
 
     // If there was no error the item was either loaded from the cache, in which case item.Hit is true, or newly loaded
     // in which case item.Hit is false. What case exactly does not matter here and we simply return the value as is.
-    return item.Value
+    return item.Value, nil
 }
 ```
 
@@ -149,7 +149,7 @@ func getUser(ctx context.Context, id string) (*User, error) {
         return item, err
     }
 
-    return item.Value
+    return item.Value, nil
 }
 ```
 
@@ -213,7 +213,7 @@ func renderAccountDetails(ctx context.Context, user *User) (string, error) {
 
     // Here item.Tags contains "config:use-new-design"!
 
-    return item.Value
+    return item.Value, nil
 }
 ```
 
@@ -251,7 +251,7 @@ func renderAccountPage(ctx context.Context, user *User) (string, error) {
 
     // Here item.Tags also contains "config:use-new-design"!
 
-    return item.Value
+    return item.Value, nil
 }
 ```
 
