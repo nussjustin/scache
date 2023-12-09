@@ -28,11 +28,20 @@ func getUser(ctx context.Context, id string) (*User, error) {
     if err != nil {
         return nil, err
     }
-    // User was not found in the case
-    if !item.Hit {
-        return nil, nil
-    }
+	// On miss item.Value will be nil, so we do not need to check for item.Hit.
     return item.Value, nil
+}
+```
+
+Since `item` is a value and can never be nil, the error check could be skipped completely:
+
+```go
+var cache = scache.New[*User](scache.NewLRU(32), nil)
+
+func getUser(ctx context.Context, id string) (*User, error) {
+    item, err := cache.Get(ctx, id)
+    // On error item will be the zero value, which means item.Value will be nil.
+	return item.Value, err
 }
 ```
 
@@ -100,7 +109,7 @@ func getUser(ctx context.Context, id string) (*User, error) {
     }
 
     // If there was no error the item was either loaded from the cache, in which case item.Hit is true, or newly loaded
-    // in which case item.Hit is false. What case exactly does not matter here and we simply return the value as is.
+    // in which case item.Hit is false. What case exactly does not matter here, and we simply return the value as is.
     return item.Value, nil
 }
 ```
