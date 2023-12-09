@@ -812,7 +812,83 @@ func TestCache_LoadSync(t *testing.T) {
 	})
 }
 
-// TODO: Benchmark LoadSync
+func BenchmarkCache_LoadSync(b *testing.B) {
+	b.Run("Miss", func(b *testing.B) {
+		b.Run("NoTags", func(b *testing.B) {
+			ctx := testContext(b)
+
+			c := scache.New[int](noopBackend[int]{}, nil)
+
+			b.ReportAllocs()
+
+			loader := fixed(0)
+
+			for i := 0; i < b.N; i++ {
+				_, _ = c.LoadSync(ctx, "miss", loader)
+			}
+		})
+
+		b.Run("Tags", func(b *testing.B) {
+			ctx := testContext(b)
+
+			c := scache.New[int](noopBackend[int]{}, nil)
+
+			b.ReportAllocs()
+
+			loader := func(ctx context.Context, _ string, _ scache.Item[int]) (scache.Item[int], error) {
+				scache.Tag(ctx, "tag2")
+				scache.Tags(ctx, "tag3", "tag4")
+				return scache.Value(0, "tag1", "tag3"), nil
+			}
+
+			for i := 0; i < b.N; i++ {
+				_, _ = c.LoadSync(ctx, "miss", loader)
+			}
+		})
+	})
+
+	b.Run("Hit", func(b *testing.B) {
+		b.Run("Contention", func(b *testing.B) {
+			ctx := testContext(b)
+
+			c := scache.New[int](newTestBackend[int](b), nil)
+			assertNoError(b, c.Set(ctx, "hit", scache.Value(1)))
+
+			b.ReportAllocs()
+
+			loader := unreachable[int]
+
+			for i := 0; i < b.N; i++ {
+				var wg sync.WaitGroup
+				wg.Add(2)
+				go func() {
+					defer wg.Done()
+					_, _ = c.LoadSync(ctx, "hit", loader)
+				}()
+				go func() {
+					defer wg.Done()
+					_, _ = c.LoadSync(ctx, "hit", loader)
+				}()
+				wg.Wait()
+			}
+		})
+
+		b.Run("No Contention", func(b *testing.B) {
+			ctx := testContext(b)
+
+			c := scache.New[int](newTestBackend[int](b), nil)
+			assertNoError(b, c.Set(ctx, "hit", scache.Value(1)))
+
+			b.ReportAllocs()
+
+			loader := unreachable[int]
+
+			for i := 0; i < b.N; i++ {
+				_, _ = c.LoadSync(ctx, "hit", loader)
+			}
+		})
+	})
+}
 
 func TestCache_Set(t *testing.T) {
 	ctx := testContext(t)
