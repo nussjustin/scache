@@ -186,7 +186,7 @@ func (c *Cache[T]) load(ctx context.Context, key string, load Loader[T]) (Item[T
 
 	t := &tagger{}
 
-	loaded, err := load(context.WithValue(ctx, taggerKey, t), key)
+	loaded, err := load(context.WithValue(ctx, taggerKey, t), key, item)
 	if err != nil {
 		if !item.Hit || !c.stale(item.ExpiresAt) {
 			item = Item[T]{}
@@ -213,6 +213,11 @@ func (c *Cache[T]) load(ctx context.Context, key string, load Loader[T]) (Item[T
 	return loaded, nil
 }
 
+// Loader defines a function for loading / generating a new value for a given cache key.
+//
+// See [Cache.Load] for more information on the usage.
+type Loader[T any] func(ctx context.Context, key string, old Item[T]) (Item[T], error)
+
 // Load loads the value for the given key from the cache and returns it or, if the value is missing, the given load
 // function will be called instead and the result will be cached, if no error occurred.
 //
@@ -225,6 +230,9 @@ func (c *Cache[T]) load(ctx context.Context, key string, load Loader[T]) (Item[T
 // Expired values from the cache are treated as missing and will cause a new value to be loaded. If loading fails and
 // the expired value is inside the staleness windows (see [CacheOpts.StaleDuration]) it will be returned _together_ with
 // the error from the callback.
+//
+// If an expired item was found, it will be passed to load, otherwise an empty item will be passed. This can be used
+// for example to return the old, expired value if a new value could not be loaded.
 //
 // If there is an error saving the loaded value to the cache, that error will be ignored.
 //
@@ -244,7 +252,7 @@ func (c *Cache[T]) Load(ctx context.Context, key string, load Loader[T]) (Item[T
 // If multiple goroutines call LoadSync at the same time with the same key, they will all wait for the result of the
 // one running load callback.
 //
-// When calling the load function, a new context with separate timeout is passed (see [CacheOpts.LoadSyncTimeout]).
+// When calling the load function, a new, separate context is passed (see [CacheOpts.LoadSyncContextFunc]).
 func (c *Cache[T]) LoadSync(ctx context.Context, key string, load Loader[T]) (Item[T], error) {
 	var loadCtx context.Context
 	var cancel context.CancelFunc
@@ -385,6 +393,3 @@ type Item[T any] struct {
 func Value[T any](v T, tags ...string) Item[T] {
 	return Item[T]{Tags: tags, Value: v}
 }
-
-// Loader defines the signature for functions that can be passed to [Cache.Load].
-type Loader[T any] func(ctx context.Context, key string) (Item[T], error)

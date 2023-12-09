@@ -410,3 +410,25 @@ func assertPanic[T comparable](tb testing.TB, f func(), want T) {
 
 	f()
 }
+
+func fixed[T any](v T) func(context.Context, string, scache.Item[T]) (scache.Item[T], error) {
+	return func(context.Context, string, scache.Item[T]) (scache.Item[T], error) {
+		return scache.Value(v), nil
+	}
+}
+
+func fixedError[T any](err error) func(context.Context, string, scache.Item[T]) (scache.Item[T], error) {
+	return func(context.Context, string, scache.Item[T]) (scache.Item[T], error) {
+		return scache.Item[T]{}, err
+	}
+}
+
+func fixedPanic[T any](v any) func(context.Context, string, scache.Item[T]) (scache.Item[T], error) {
+	return func(context.Context, string, scache.Item[T]) (scache.Item[T], error) {
+		panic(v)
+	}
+}
+
+func unreachable[T any](context.Context, string, scache.Item[T]) (scache.Item[int], error) {
+	panic("unreachable")
+}

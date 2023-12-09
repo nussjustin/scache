@@ -88,9 +88,9 @@ The previous example could be rewritten using [Load][5] like this:
 var cache = scache.New[*User](scache.NewLRU(32), nil)
 
 func getUser(ctx context.Context, id string) (*User, error) {
-    item, err := cache.Load(ctx, id, func(ctx context.Context, id string) (scache.Item[*User], error) {
+    item, err := cache.Load(ctx, id, func(ctx context.Context, id string, old scache.Item[*User]) (scache.Item[*User], error) {
         user, err := loadUser(ctx, id)
-        // scache.Value is a shorthand for sache.Item[*User]{Value: user}
+        // scache.Value is a shorthand for scache.Item[*User]{Value: user}
         return scache.Value(user), err
     })
 
@@ -127,7 +127,7 @@ var cache = scache.New[*User](scache.NewLRU(32), &scache.CacheOpts{
 })
 
 func getUser(ctx context.Context, id string) (*User, error) {
-    item, err := cache.Load(ctx, id, func(ctx context.Context, id string) (scache.Item[*User], error) {
+    item, err := cache.Load(ctx, id, func(ctx context.Context, id string, old scache.Item[*User]) (scache.Item[*User], error) {
         user, err := loadUser(ctx, id)
 
         // Mark the item as valid for 5 minutes
@@ -192,7 +192,7 @@ func isConfigEnabled(ctx context.Context, name string) bool {
 }
 
 func renderAccountDetails(ctx context.Context, user *User) (string, error) {
-    item, err := cache.Load(ctx, user.ID, func(ctx context.Context, id string) (scache.Item[string], error) {
+    item, err := cache.Load(ctx, user.ID, func(ctx context.Context, id string, old scache.Item[string]) (scache.Item[string], error) {
         var result string
         var err error
 
@@ -229,7 +229,7 @@ Building on the previous example:
 var fullPageCache = scache.New[string](scache.NewLRU(32), nil)
 
 func renderAccountPage(ctx context.Context, user *User) (string, error) {
-    item, err := fullPageCache.Load(ctx, user.ID, func(ctx context.Context, id string) (scache.Item[string], error) {
+    item, err := fullPageCache.Load(ctx, user.ID, func(ctx context.Context, id string, old scache.Item[string]) (scache.Item[string], error) {
         header, err := renderHeader(ctx)
         if err != nil {
             return scache.Value(""), err

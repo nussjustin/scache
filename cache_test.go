@@ -229,9 +229,7 @@ func TestCache_Load(t *testing.T) {
 
 				c := scache.New[int](b, nil)
 
-				v, err := c.Load(ctx, "error", func(context.Context, string) (scache.Item[int], error) {
-					panic("unreachable")
-				})
+				v, err := c.Load(ctx, "error", unreachable[int])
 
 				assertError(t, err, io.EOF)
 				assertZero(t, v.Value)
@@ -247,9 +245,7 @@ func TestCache_Load(t *testing.T) {
 
 				const want = 1234
 
-				item, err := c.Load(ctx, "error", func(context.Context, string) (scache.Item[int], error) {
-					return scache.Value(want), nil
-				})
+				item, err := c.Load(ctx, "error", fixed(want))
 
 				assertNoError(t, err)
 				assertMiss(t, item, "hit", nil, want)
@@ -266,9 +262,7 @@ func TestCache_Load(t *testing.T) {
 
 			c := scache.New[int](b, nil)
 
-			item, err := c.Load(ctx, "hit", func(context.Context, string) (scache.Item[int], error) {
-				panic("unreachable")
-			})
+			item, err := c.Load(ctx, "hit", unreachable[int])
 
 			assertNoError(t, err)
 			assertHit(t, item, "hit", nil, want)
@@ -284,9 +278,7 @@ func TestCache_Load(t *testing.T) {
 
 				c := scache.New[int](b, nil)
 
-				item, err := c.Load(ctx, "error", func(context.Context, string) (scache.Item[int], error) {
-					return scache.Item[int]{}, io.EOF
-				})
+				item, err := c.Load(ctx, "error", fixedError[int](io.EOF))
 
 				assertError(t, err, io.EOF)
 				assertMiss(t, item, "error", nil, 0)
@@ -305,9 +297,7 @@ func TestCache_Load(t *testing.T) {
 
 				c := scache.New[int](b, &scache.CacheOpts{StaleDuration: time.Minute, SinceFunc: clock.since})
 
-				item, err := c.Load(ctx, "stale", func(context.Context, string) (scache.Item[int], error) {
-					return scache.Item[int]{}, io.EOF
-				})
+				item, err := c.Load(ctx, "stale", fixedError[int](io.EOF))
 
 				assertError(t, err, io.EOF)
 				assertHit(t, item, "stale", nil, 1234)
@@ -322,10 +312,8 @@ func TestCache_Load(t *testing.T) {
 			c := scache.New[int](b, nil)
 
 			assertPanic(t, func() {
-				_, _ = c.Load(ctx, "error", func(context.Context, string) (scache.Item[int], error) {
-					panic("panic")
-				})
-			}, "panic")
+				_, _ = c.Load(ctx, "error", unreachable[int])
+			}, "unreachable")
 
 			item, err := b.Get(ctx, "panic")
 			assertNoError(t, err)
@@ -343,7 +331,7 @@ func TestCache_Load(t *testing.T) {
 
 			// First load
 			{
-				item, err := c.Load(ctx, "loaded", func(_ context.Context, key string) (scache.Item[int], error) {
+				item, err := c.Load(ctx, "loaded", func(_ context.Context, key string, _ scache.Item[int]) (scache.Item[int], error) {
 					assertEquals(t, key, "loaded")
 					count++
 					return scache.Value(count), nil
@@ -359,9 +347,7 @@ func TestCache_Load(t *testing.T) {
 
 			// Cached value
 			{
-				item, err := c.Load(ctx, "loaded", func(context.Context, string) (scache.Item[int], error) {
-					panic("unreachable")
-				})
+				item, err := c.Load(ctx, "loaded", unreachable[int])
 
 				assertNoError(t, err)
 				assertEquals(t, item.Value, 1)
@@ -374,7 +360,7 @@ func TestCache_Load(t *testing.T) {
 
 			// Second load
 			{
-				item, err := c.Load(ctx, "loaded", func(_ context.Context, key string) (scache.Item[int], error) {
+				item, err := c.Load(ctx, "loaded", func(_ context.Context, key string, _ scache.Item[int]) (scache.Item[int], error) {
 					assertEquals(t, key, "loaded")
 					count++
 					return scache.Value(count), nil
@@ -389,6 +375,32 @@ func TestCache_Load(t *testing.T) {
 			}
 		})
 
+		t.Run("Stale", func(t *testing.T) {
+			ctx := testContext(t)
+
+			clock := newFakeClock()
+
+			b := newTestBackend[int](t)
+			_ = b.Set(ctx, "stale", scache.Value(1234))
+
+			expiresAt := clock.now.Add(time.Minute + time.Second)
+			b.setExpiresAt("stale", expiresAt)
+
+			clock.advance(2 * time.Minute)
+
+			c := scache.New[int](b, &scache.CacheOpts{StaleDuration: time.Minute, SinceFunc: clock.since})
+
+			item, err := c.Load(ctx, "stale", func(ctx context.Context, key string, old scache.Item[int]) (scache.Item[int], error) {
+				assertEquals(t, old.ExpiresAt, expiresAt)
+				assertEquals(t, old.Hit, true)
+				assertEquals(t, old.Value, 1234)
+				return scache.Value(old.Value * 2), nil
+			})
+
+			assertNoError(t, err)
+			assertMiss(t, item, "stale", nil, 2468)
+		})
+
 		t.Run("Tags", func(t *testing.T) {
 			ctx := testContext(t)
 
@@ -398,7 +410,7 @@ func TestCache_Load(t *testing.T) {
 
 			// Simple
 			{
-				item, err := c.Load(ctx, "tagged", func(ctx context.Context, _ string) (scache.Item[int], error) {
+				item, err := c.Load(ctx, "tagged", func(ctx context.Context, _ string, _ scache.Item[int]) (scache.Item[int], error) {
 					scache.Tag(ctx, "tag2")
 					scache.Tags(ctx, "tag3", "tag4")
 					return scache.Value(1, "tag1", "tag3"), nil
@@ -412,10 +424,10 @@ func TestCache_Load(t *testing.T) {
 
 			// Nested
 			{
-				item, err := c.Load(ctx, "outer", func(ctx context.Context, _ string) (scache.Item[int], error) {
+				item, err := c.Load(ctx, "outer", func(ctx context.Context, _ string, _ scache.Item[int]) (scache.Item[int], error) {
 					scache.Tag(ctx, "outer2")
 
-					item, err := c.Load(ctx, "inner", func(ctx context.Context, _ string) (scache.Item[int], error) {
+					item, err := c.Load(ctx, "inner", func(ctx context.Context, _ string, _ scache.Item[int]) (scache.Item[int], error) {
 						scache.Tag(ctx, "inner2")
 						scache.Tags(ctx, "inner3", "inner4")
 						return scache.Value(1, "inner1", "inner3"), nil
@@ -456,10 +468,10 @@ func BenchmarkCache_Load(b *testing.B) {
 
 			b.ReportAllocs()
 
+			loader := fixed(0)
+
 			for i := 0; i < b.N; i++ {
-				_, _ = c.Load(ctx, "miss", func(context.Context, string) (scache.Item[int], error) {
-					return scache.Value(0), nil
-				})
+				_, _ = c.Load(ctx, "miss", loader)
 			}
 		})
 
@@ -470,12 +482,14 @@ func BenchmarkCache_Load(b *testing.B) {
 
 			b.ReportAllocs()
 
+			loader := func(ctx context.Context, _ string, _ scache.Item[int]) (scache.Item[int], error) {
+				scache.Tag(ctx, "tag2")
+				scache.Tags(ctx, "tag3", "tag4")
+				return scache.Value(0, "tag1", "tag3"), nil
+			}
+
 			for i := 0; i < b.N; i++ {
-				_, _ = c.Load(ctx, "miss", func(ctx context.Context, _ string) (scache.Item[int], error) {
-					scache.Tag(ctx, "tag2")
-					scache.Tags(ctx, "tag3", "tag4")
-					return scache.Value(0, "tag1", "tag3"), nil
-				})
+				_, _ = c.Load(ctx, "miss", loader)
 			}
 		})
 	})
@@ -488,10 +502,10 @@ func BenchmarkCache_Load(b *testing.B) {
 
 		b.ReportAllocs()
 
+		loader := unreachable[int]
+
 		for i := 0; i < b.N; i++ {
-			_, _ = c.Load(ctx, "hit", func(context.Context, string) (scache.Item[int], error) {
-				panic("unreachable")
-			})
+			_, _ = c.Load(ctx, "hit", loader)
 		}
 	})
 }
@@ -614,9 +628,7 @@ func TestCache_LoadSync(t *testing.T) {
 				loadSyncTest[int]{
 					opts:    scache.CacheOpts{IgnoreGetErrors: true},
 					backend: newBlockingBackend[int](),
-					load: func(context.Context, string) (scache.Item[int], error) {
-						return scache.Value(1), nil
-					},
+					load:    fixed(1),
 					beforeWait: func(cancel context.CancelCauseFunc) {
 						cancel(nil)
 					},
@@ -644,27 +656,32 @@ func TestCache_LoadSync(t *testing.T) {
 				loadSyncTest[int]{
 					backend:  noopBackend[int]{},
 					expected: loadSyncTestResult[int]{err: customErr},
-					load: func(context.Context, string) (scache.Item[int], error) {
-						return scache.Value(0), customErr
-					},
+					load:     fixedError[int](customErr),
 				}.run(t, testContext(t))
 			})
 
 			t.Run("Stale", func(t *testing.T) {
+				ctx := testContext(t)
+
+				clock := newFakeClock()
+
 				b := newTestBackend[int](t)
-				_ = b.Set(nil, "synced", scache.Value(1234))
-				b.setExpiresAt("synced", time.Now().Add(-time.Hour))
+				_ = b.Set(ctx, "stale", scache.Value(1234))
+
+				expiresAt := clock.now.Add(time.Minute + time.Second)
+				b.setExpiresAt("stale", expiresAt)
+
+				clock.advance(2 * time.Minute)
 
 				customErr := errors.New("custom err")
 
 				loadSyncTest[int]{
 					opts:     scache.CacheOpts{StaleDuration: 3 * time.Hour},
 					backend:  b,
-					expected: loadSyncTestResult[int]{item: hit(1234), err: customErr},
-					load: func(context.Context, string) (scache.Item[int], error) {
-						return scache.Value(0), customErr
-					},
-				}.run(t, testContext(t))
+					expected: loadSyncTestResult[int]{err: customErr},
+					key:      "stale",
+					load:     fixedError[int](customErr),
+				}.run(t, ctx)
 			})
 		})
 
@@ -674,16 +691,14 @@ func TestCache_LoadSync(t *testing.T) {
 			loadSyncTest[int]{
 				backend:  noopBackend[int]{},
 				expected: loadSyncTestResult[int]{recovered: customErr},
-				load: func(context.Context, string) (scache.Item[int], error) {
-					panic(customErr)
-				},
+				load:     fixedPanic[int](customErr),
 			}.run(t, testContext(t))
 		})
 
 		t.Run("Loaded", func(t *testing.T) {
 			var counter atomic.Int64
 
-			load := func(context.Context, string) (scache.Item[int], error) {
+			load := func(context.Context, string, scache.Item[int]) (scache.Item[int], error) {
 				n := counter.Add(1)
 				return scache.Value(int(n)), nil
 			}
@@ -719,12 +734,40 @@ func TestCache_LoadSync(t *testing.T) {
 			assertEquals(t, counter.Load(), 2)
 		})
 
+		t.Run("Stale", func(t *testing.T) {
+			ctx := testContext(t)
+
+			clock := newFakeClock()
+
+			b := newTestBackend[int](t)
+			_ = b.Set(ctx, "stale", scache.Value(1234))
+
+			expiresAt := clock.now.Add(time.Minute + time.Second)
+			b.setExpiresAt("stale", expiresAt)
+
+			clock.advance(2 * time.Minute)
+
+			load := func(ctx context.Context, key string, old scache.Item[int]) (scache.Item[int], error) {
+				assertEquals(t, old.ExpiresAt, expiresAt)
+				assertEquals(t, old.Hit, true)
+				assertEquals(t, old.Value, 1234)
+				return scache.Value(old.Value * 2), nil
+			}
+
+			loadSyncTest[int]{
+				backend:  b,
+				expected: loadSyncTestResult[int]{item: scache.Value(2468)},
+				key:      "stale",
+				load:     load,
+			}.run(t, ctx)
+		})
+
 		t.Run("Tags", func(t *testing.T) {
 			ctx := testContext(t)
 
 			b := newTestBackend[int](t)
 
-			load := func(ctx context.Context, _ string) (scache.Item[int], error) {
+			load := func(ctx context.Context, _ string, _ scache.Item[int]) (scache.Item[int], error) {
 				loadSyncTest[int]{
 					backend: b,
 					key:     "outer",
@@ -734,7 +777,7 @@ func TestCache_LoadSync(t *testing.T) {
 							"outer1", "outer2", "outer3", "outer4",
 						),
 					},
-					load: func(ctx context.Context, _ string) (scache.Item[int], error) {
+					load: func(ctx context.Context, _ string, _ scache.Item[int]) (scache.Item[int], error) {
 						scache.Tag(ctx, "outer2")
 						scache.Tags(ctx, "outer3", "outer4")
 
@@ -744,7 +787,7 @@ func TestCache_LoadSync(t *testing.T) {
 							expected: loadSyncTestResult[int]{
 								item: scache.Value(2, "inner1", "inner2", "inner3", "inner4"),
 							},
-							load: func(ctx context.Context, _ string) (scache.Item[int], error) {
+							load: func(ctx context.Context, _ string, item scache.Item[int]) (scache.Item[int], error) {
 								scache.Tag(ctx, "inner2")
 								scache.Tags(ctx, "inner3", "inner4")
 
