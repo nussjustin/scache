@@ -809,6 +809,30 @@ func TestCache_LoadSync(t *testing.T) {
 				Tags: []string{"inner1", "inner2", "inner3", "inner4", "manual", "outer1", "outer2", "outer3", "outer4"},
 			})
 		})
+
+		t.Run("Timeout", func(t *testing.T) {
+			// Add a timeout to avoid hangs just in case this is broken
+			ctx, cancel := context.WithTimeout(testContext(t), 3*time.Second)
+
+			wait := make(chan struct{}, 1)
+
+			load := func(context.Context, string, scache.Item[int]) (scache.Item[int], error) {
+				cancel()
+				wait <- struct{}{}
+				return scache.Value(1), nil
+			}
+
+			b := newTestBackend[int](t)
+
+			loadSyncTest[int]{
+				backend:  b,
+				expected: loadSyncTestResult[int]{err: context.Canceled},
+				load:     load,
+			}.run(t, ctx)
+
+			// Ensure goroutine has run and will exit
+			<-wait
+		})
 	})
 }
 

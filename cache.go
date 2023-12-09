@@ -294,8 +294,11 @@ func (c *Cache[T]) LoadSync(ctx context.Context, key string, load Loader[T]) (It
 		}()
 	}
 
-	// TODO: Implement context wait
-	<-once.done
+	select {
+	case <-once.done:
+	case <-ctx.Done():
+		return Item[T]{}, ctx.Err()
+	}
 
 	if once.recovered != nil {
 		panic(once.recovered)
