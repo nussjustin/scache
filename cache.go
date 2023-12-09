@@ -20,7 +20,6 @@ type Backend[T any] interface {
 	Set(ctx context.Context, key string, item Item[T]) error
 }
 
-// TODO: LRU Backend
 // TODO: Redis Backend
 // TODO: Multi Level Backend
 // TODO: Backend that saves in background with timeout
