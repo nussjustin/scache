@@ -20,10 +20,6 @@ type Backend[T any] interface {
 	Set(ctx context.Context, key string, item Item[T]) error
 }
 
-// TODO: Redis Backend
-// TODO: Multi Level Backend
-// TODO: Backend that saves in background with timeout
-
 // Cache provides a high-level cache interface on top of a lower-level [Backend] implementation.
 type Cache[T any] struct {
 	b       Backend[T]
