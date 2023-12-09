@@ -31,7 +31,16 @@ type Cache[T any] struct {
 	getMany func(ctx context.Context, keys ...string) ([]Item[T], error)
 
 	syncMu sync.Mutex
-	sync   map[string]func() loadSyncResult[T]
+	sync   map[string]*loadSyncItem[T]
+}
+
+type loadSyncItem[T any] struct {
+	item Item[T]
+	err  error
+
+	recovered any
+
+	done chan struct{}
 }
 
 // CacheOpts defines options that can be used to customize how a [Cache] behaves.
@@ -65,11 +74,6 @@ type CacheOpts struct {
 	StaleDuration time.Duration
 }
 
-type loadSyncResult[T any] struct {
-	item Item[T]
-	err  error
-}
-
 func (c *CacheOpts) value() CacheOpts {
 	if c == nil {
 		return CacheOpts{}
@@ -92,7 +96,7 @@ func (c *CacheOpts) value() CacheOpts {
 func New[T any](b Backend[T], opts *CacheOpts) *Cache[T] {
 	c := &Cache[T]{b: b, opts: opts.value()}
 	c.getMany = getManyFunc(c)
-	c.sync = make(map[string]func() loadSyncResult[T])
+	c.sync = make(map[string]*loadSyncItem[T])
 
 	if c.opts.LoadSyncContextFunc == nil {
 		c.opts.LoadSyncContextFunc = func() (context.Context, context.CancelFunc) {
@@ -252,28 +256,17 @@ func (c *Cache[T]) Load(ctx context.Context, key string, load Loader[T]) (Item[T
 // one running load callback.
 //
 // When calling the load function, a new, separate context is passed (see [CacheOpts.LoadSyncContextFunc]).
+//
+// Any panic raised in load will be passed on to the goroutines waiting on the result.
 func (c *Cache[T]) LoadSync(ctx context.Context, key string, load Loader[T]) (Item[T], error) {
 	var loadCtx context.Context
 	var cancel context.CancelFunc
+	var runOnce bool
 
 	c.syncMu.Lock()
 	once := c.sync[key]
 	if once == nil {
-		once = sync.OnceValue(func() loadSyncResult[T] {
-			defer func() {
-				c.syncMu.Lock()
-				delete(c.sync, key)
-				c.syncMu.Unlock()
-			}()
-
-			loadCtx, cancel = c.opts.LoadSyncContextFunc()
-			defer cancel()
-
-			item, err := c.load(loadCtx, key, load)
-
-			return loadSyncResult[T]{item, err}
-		})
-
+		once, runOnce = &loadSyncItem[T]{done: make(chan struct{}, 1)}, true
 		c.sync[key] = once
 	}
 	c.syncMu.Unlock()
@@ -281,11 +274,36 @@ func (c *Cache[T]) LoadSync(ctx context.Context, key string, load Loader[T]) (It
 	// Used by tests to ensure that two goroutines do not race
 	testutil.LoadSync(c)
 
-	result := once()
+	// Do this outside the lock so that the testutil.LoadSync call can be used as barrier.
+	if runOnce {
+		go func() {
+			defer func() {
+				once.recovered = recover()
 
-	Tags(ctx, result.item.Tags...)
+				c.syncMu.Lock()
+				delete(c.sync, key)
+				c.syncMu.Unlock()
 
-	return result.item, result.err
+				close(once.done)
+			}()
+
+			loadCtx, cancel = c.opts.LoadSyncContextFunc()
+			defer cancel()
+
+			once.item, once.err = c.load(loadCtx, key, load)
+		}()
+	}
+
+	// TODO: Implement context wait
+	<-once.done
+
+	if once.recovered != nil {
+		panic(once.recovered)
+	}
+
+	Tags(ctx, once.item.Tags...)
+
+	return once.item, once.err
 }
 
 // Set updates the cache for the given key with a new value.
