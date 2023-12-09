@@ -271,12 +271,12 @@ all goroutines.
 This is a very common situation and the Go team even provides a package called [golang.org/x/sync/singleflight][11]
 that implements a solution for this.
 
-While the [golang.org/x/sync/singleflight][11] package can be used together with scache, scache also provides its own
-implementation of this idea, which allows users to avoid the dependency while also providing better control of the
-caching behaviour without requiring the user to write extra code.
+While the [singleflight][11] package can be used together with scache, scache also provides its own implementation of
+this idea, which allows users to avoid the dependency while also providing better control of the caching behaviour
+without requiring any extra code.
 
-The scache implementation of this pattern is available via the [LoadSync] method. This method has the same signature
-as [Load] and uses the same basic logic, but guarantees that all goroutines that for every key, only one goroutine
+The scache implementation of this pattern is available via the [LoadSync][12] method. This method has the same signature
+as [Load][5] and uses the same basic logic, but guarantees that all goroutines that for every key, only one goroutine
 is executing the get + load/compute + set logic at any time.
 
 ## Contributing
@@ -299,3 +299,4 @@ Please make sure to update tests as appropriate.
 [9]: https://pkg.go.dev/github.com/nussjustin/scache#Tag
 [10]: https://pkg.go.dev/github.com/nussjustin/scache#Tags
 [11]: https://pkg.go.dev/golang.org/x/sync/singleflight
+[12]: https://pkg.go.dev/github.com/nussjustin/scache#Cache.LoadSync
