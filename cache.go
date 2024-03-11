@@ -41,13 +41,13 @@ type loadSyncItem[T any] struct {
 
 // CacheOpts defines options that can be used to customize how a [Cache] behaves.
 type CacheOpts struct {
-	// IgnoreGetErrors causes errors during the cache lookup inside [Cache.Load] and [Cache.LoadSync] to be ignored.
+	// IgnoreGetErrors causes errors during the cache lookup inside Cache.Load and Cache.LoadSync to be ignored.
 	//
 	// If an error occurs, the code will treat the error as a simple cache miss and continue with calling the load
 	// callback.
 	IgnoreGetErrors bool
 
-	// LoadSyncContextFunc is called by LoadSync to get a context for the call of the [Loader].
+	// LoadSyncContextFunc is called by LoadSync to get a context for the call of the Loader.
 	//
 	// If not set the following default is used:
 	//
@@ -64,9 +64,9 @@ type CacheOpts struct {
 
 	// StaleDuration defines an optional duration during which expired cache entries are considered as stale.
 	//
-	// Stale values will be treated as normal hits by [Cache.Get] and [Cache.GetMany], while [Cache.Load] and
-	// [Cache.LoadSync] will consider these values as a miss, unless there was an error, in which case the stale value
-	// is returned instead of the error.
+	// Stale values will be treated as normal hits by Cache.Get and Cache.GetMany, while Cache.Load and Cache.LoadSync
+	// will consider these values as a miss, unless there was an error, in which case the stale value is returned
+	// instead of the error.
 	StaleDuration time.Duration
 }
 
@@ -220,14 +220,14 @@ type Loader[T any] func(ctx context.Context, key string, old Item[T]) (Item[T], 
 // Load loads the value for the given key from the cache and returns it or, if the value is missing, the given load
 // function will be called instead and the result will be cached, if no error occurred.
 //
-// An [Item] returned by the load function will have its [Item.Hit] field set to false, making it possible to
+// An [Item] returned by the load function will have its Item.Hit field set to false, making it possible to
 // distinguish between cached and uncached values.
 //
 // An error when looking up the existing value from the cache will cause that error to be returned, unless the
-// [CacheOpts.IgnoreGetErrors] option was set. In this case the error will be ignored and handled as a cache miss.
+// CacheOpts.IgnoreGetErrors option was set. In this case the error will be ignored and handled as a cache miss.
 //
 // Expired values from the cache are treated as missing and will cause a new value to be loaded. If loading fails and
-// the expired value is inside the staleness windows (see [CacheOpts.StaleDuration]) it will be returned _together_ with
+// the expired value is inside the staleness windows (see CacheOpts.StaleDuration) it will be returned together with
 // the error from the callback.
 //
 // If an expired item was found, it will be passed to load, otherwise an empty item will be passed. This can be used
@@ -251,7 +251,7 @@ func (c *Cache[T]) Load(ctx context.Context, key string, load Loader[T]) (Item[T
 // If multiple goroutines call LoadSync at the same time with the same key, they will all wait for the result of the
 // one running load callback.
 //
-// When calling the load function, a new, separate context is passed (see [CacheOpts.LoadSyncContextFunc]).
+// When calling the load function, a new, separate context is passed (see CacheOpts.LoadSyncContextFunc).
 //
 // Any panic raised in load will be passed on to the goroutines waiting on the result.
 func (c *Cache[T]) LoadSync(ctx context.Context, key string, load Loader[T]) (Item[T], error) {
@@ -370,7 +370,7 @@ func Tags(ctx context.Context, tags ...string) {
 	t.addAll(tags)
 }
 
-// Item represents a single cached value with all its metadata or a cache miss if [Item.Hit] is false.
+// Item represents a single cached value with all its metadata or a cache miss if Item.Hit is false.
 type Item[T any] struct {
 	// CachedAt contains the time at which the item was saved.
 	//
