@@ -18,8 +18,8 @@ type twoLevelBackend[T any] struct {
 // New values are set in the second level cache. When a value is fetched from the second level cache
 // and that value has not yet expired, it will be saved into the first level cache for faster lookups.
 //
-// Errors when fetching from the first level cache are ignored and cause a lookup from the second
-// level cache. Similarly, errors when saving into the first level cache are ignored.
+// Errors when fetching from the first level cache will be ignored and cause a lookup from the second
+// level cache. Similarly, errors when saving into the first level cache will be ignored.
 func NewTwoLevelBackend[T any](firstLevel, secondLevel Backend[T]) Backend[T] {
 	return &twoLevelBackend[T]{l1: firstLevel, l2: secondLevel}
 }
