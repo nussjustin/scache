@@ -1,3 +1,6 @@
+issues:
+  exclude-files:
+    - '_test.go$'
 linters:
   enable:
     # Default linters, specified for clarity
@@ -52,6 +55,3 @@ linters-settings:
       - prefix(github.com/nussjustin/feature)
       - blank
       - dot
-run:
-  skip-files:
-    - _test.go$
