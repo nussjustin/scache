@@ -1,2 +1,2 @@
-// Package scache implements a simple cache interface with support for cache tags and lookup caching.
+// Package scache implements caching of computed values using callbacks..
 package scache

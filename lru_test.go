@@ -1,88 +1,50 @@
 package scache_test
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/nussjustin/scache"
 )
 
 func TestLRU(t *testing.T) {
-	ctx := testContext(t)
+	ctx := testCtx(t)
 
-	const size = 8
+	l := scache.NewLRU[string, string](3)
 
-	b := scache.NewLRU[int](size)
-
-	assertEquals(t, b.Len(), 0)
-
-	// Check general capacity and order
-	for i := 0; i < size; i++ {
-		assertNoError(t, b.Set(ctx, fmt.Sprint(i), scache.Value(i)))
+	assertLen := func(want int) {
+		t.Helper()
+		if got := l.Len(); got != want {
+			t.Errorf("got length %d, want %d", got, want)
+		}
 	}
 
-	assertEquals(t, b.Len(), size)
+	assertCacheNotContains(t, l, "missing-key")
+	assertLen(0)
 
-	for i := 0; i < size; i++ {
-		assertContains(t, b, ctx, fmt.Sprint(i), nil, i)
-	}
+	_ = l.Set(ctx, "key1", "value")
+	assertCacheContains(t, l, "key1", "value")
+	assertLen(1)
 
-	assertNoError(t, b.Set(ctx, "extra", scache.Value(-1)))
+	_ = l.Set(ctx, "key2", "value")
+	assertCacheContains(t, l, "key2", "value")
+	assertLen(2)
 
-	for i := 1; i < size; i++ {
-		assertContains(t, b, ctx, fmt.Sprint(i), nil, i)
-	}
+	_ = l.Set(ctx, "key3", "value")
+	assertCacheContains(t, l, "key3", "value")
+	assertLen(3)
 
-	assertNotContains(t, b, ctx, "0")
-	assertContains(t, b, ctx, "extra", nil, -1)
+	// Get first key to update the access time
+	_, _, _ = l.Get(ctx, "key1")
 
-	assertEquals(t, b.Len(), size)
+	// The LRU size is 3, so this should remove one key
+	_ = l.Set(ctx, "key4", "value")
+	assertCacheContains(t, l, "key1", "value")
+	assertCacheNotContains(t, l, "key2")
+	assertCacheContains(t, l, "key3", "value")
+	assertCacheContains(t, l, "key4", "value")
+	assertLen(3)
 
-	// Check LRU logic
-	assertContains(t, b, ctx, "1", nil, 1)
-	assertContains(t, b, ctx, "3", nil, 3)
-	assertContains(t, b, ctx, "5", nil, 5)
-
-	assertNoError(t, b.Set(ctx, "extra1", scache.Value(-1)))
-	assertNoError(t, b.Set(ctx, "extra2", scache.Value(-1)))
-	assertNoError(t, b.Set(ctx, "extra3", scache.Value(-1)))
-
-	assertContains(t, b, ctx, "1", nil, 1)
-	assertContains(t, b, ctx, "3", nil, 3)
-	assertContains(t, b, ctx, "5", nil, 5)
-
-	assertNotContains(t, b, ctx, "2")
-	assertNotContains(t, b, ctx, "4")
-	assertNotContains(t, b, ctx, "6")
-
-	// Check weight support
-	assertNoError(t, b.Set(ctx, "weight2", scache.Item[int]{Weight: 2}))
-	assertEquals(t, b.Len(), 7)
-
-	assertNoError(t, b.Set(ctx, "weight4", scache.Item[int]{Weight: 4}))
-	assertEquals(t, b.Len(), 4)
-
-	assertNoError(t, b.Set(ctx, "weight8", scache.Item[int]{Weight: 8}))
-	assertEquals(t, b.Len(), 1)
-
-	// Weight greater than capacity
-	assertNoError(t, b.Set(ctx, "weight10", scache.Item[int]{Weight: 10}))
-	assertNotContains(t, b, ctx, "weight10")
-
-	// Check deletion
-	assertNoError(t, b.Set(ctx, "weight2", scache.Item[int]{Weight: 2}))
-	assertNoError(t, b.Set(ctx, "weight4", scache.Item[int]{Weight: 4}))
-	assertEquals(t, b.Len(), 2)
-
-	assertNoError(t, b.Delete(ctx, "missing"))
-	assertEquals(t, b.Len(), 2)
-
-	assertContains(t, b, ctx, "weight2", nil, 0)
-
-	assertNoError(t, b.Delete(ctx, "weight2"))
-	assertEquals(t, b.Len(), 1)
-
-	assertNotContains(t, b, ctx, "weight2")
-
-	assertContains(t, b, ctx, "weight4", nil, 0)
+	_ = l.Delete(ctx, "key1")
+	assertCacheNotContains(t, l, "key1")
+	assertLen(2)
 }

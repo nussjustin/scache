@@ -6,31 +6,32 @@ import (
 	"time"
 )
 
-// LRU implements an in-memory cache [Backend] using an implementation of an LRU algorithm.
-//
-// The implementation supports weights.
+// LRU implements an in-memory [Adapter] using an implementation of an LRU algorithm.
 //
 // Expired items are not automatically removed.
-type LRU[T any] struct {
-	mu          sync.Mutex
-	m           map[string]*lruItem[T]
-	head, tail  *lruItem[T]
-	cap, weight uint
+//
+// TODO: Use maphash.Comparable in Go 1.24 and allow the key to be configured.
+type LRU[K comparable, V any] struct {
+	mu         sync.Mutex
+	m          map[string]*lruItem[K, V]
+	head, tail *lruItem[K, V]
+	cap        uint
 }
 
-type lruItem[T any] struct {
+type lruItem[K comparable, V any] struct {
 	key        string
-	item       Item[T]
-	prev, next *lruItem[T]
+	value      V
+	time       time.Time
+	prev, next *lruItem[K, V]
 }
 
-// NewLRU returns an in-memory cache [Backend] using an implementation of an LRU algorithm.
-func NewLRU[T any](size uint) *LRU[T] {
-	return &LRU[T]{m: make(map[string]*lruItem[T]), cap: size}
+// NewLRU returns an in-memory cache [Adapter] using an implementation of an LRU algorithm.
+func NewLRU[K comparable, V any](size uint) *LRU[K, V] {
+	return &LRU[K, V]{m: make(map[string]*lruItem[K, V]), cap: size}
 }
 
 // Delete removes the entry with the given key from the cache.
-func (l *LRU[T]) Delete(ctx context.Context, key string) error {
+func (l *LRU[K, V]) Delete(ctx context.Context, key string) error {
 	_ = ctx
 
 	l.mu.Lock()
@@ -46,7 +47,7 @@ func (l *LRU[T]) Delete(ctx context.Context, key string) error {
 }
 
 // Get implements the [Backend] interface.
-func (l *LRU[T]) Get(ctx context.Context, key string) (Item[T], error) {
+func (l *LRU[K, V]) Get(ctx context.Context, key string) (value V, age time.Duration, err error) {
 	_ = ctx
 
 	l.mu.Lock()
@@ -54,17 +55,18 @@ func (l *LRU[T]) Get(ctx context.Context, key string) (Item[T], error) {
 
 	item := l.m[key]
 	if item == nil {
-		return Item[T]{}, nil
+		var zero V
+		return zero, 0, ErrNotFound
 	}
 
 	l.detachLocked(item)
 	l.attachLocked(item)
 
-	return item.item, nil
+	return item.value, time.Since(item.time), nil
 }
 
 // Len returns the number of entries currently in the cache.
-func (l *LRU[T]) Len() int {
+func (l *LRU[K, V]) Len() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return len(l.m)
@@ -72,60 +74,49 @@ func (l *LRU[T]) Len() int {
 
 // Set implements the [Backend] interface.
 //
-// If the weight of the item is greater than the size of the LRU, the item will be discarded.
-func (l *LRU[T]) Set(ctx context.Context, key string, item Item[T]) error {
+// If the weight of the value is greater than the size of the LRU, the value will be discarded.
+func (l *LRU[K, V]) Set(ctx context.Context, key string, value V) error {
 	_ = ctx
-
-	item.Weight = max(1, item.Weight)
-
-	if item.Weight > l.cap {
-		return nil
-	}
-
-	item.CachedAt = time.Now()
-	item.Hit = true
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	var newItem *lruItem[T]
+	var newItem *lruItem[K, V]
 
 	if oldItem := l.m[key]; oldItem != nil {
 		l.removeLocked(oldItem)
 		newItem = oldItem
 	}
 
-	// guaranteed to finish since we checked that our item fits into the total capacity
-	for l.weight+item.Weight > l.cap {
+	// guaranteed to finish since we checked that our value fits into the total capacity
+	for uint(len(l.m)) >= l.cap {
 		tail := l.tail
 		l.removeLocked(tail)
 		newItem = tail
 	}
 
 	if newItem == nil {
-		newItem = &lruItem[T]{}
+		newItem = &lruItem[K, V]{}
 	}
 
-	*newItem = lruItem[T]{key: key, item: item}
+	*newItem = lruItem[K, V]{key: key, value: value, time: time.Now()}
 
 	l.addLocked(newItem)
 
 	return nil
 }
 
-func (l *LRU[T]) addLocked(item *lruItem[T]) {
+func (l *LRU[K, V]) addLocked(item *lruItem[K, V]) {
 	l.attachLocked(item)
-	l.weight += item.item.Weight
 	l.m[item.key] = item
 }
 
-func (l *LRU[T]) removeLocked(item *lruItem[T]) {
+func (l *LRU[K, V]) removeLocked(item *lruItem[K, V]) {
 	l.detachLocked(item)
-	l.weight -= item.item.Weight
 	delete(l.m, item.key)
 }
 
-func (l *LRU[T]) attachLocked(item *lruItem[T]) {
+func (l *LRU[K, V]) attachLocked(item *lruItem[K, V]) {
 	item.prev = nil
 	item.next = l.head
 
@@ -138,7 +129,7 @@ func (l *LRU[T]) attachLocked(item *lruItem[T]) {
 	l.head = item
 }
 
-func (l *LRU[T]) detachLocked(item *lruItem[T]) {
+func (l *LRU[K, V]) detachLocked(item *lruItem[K, V]) {
 	if l.head == item {
 		l.head = item.next
 	}

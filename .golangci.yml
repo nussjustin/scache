@@ -13,13 +13,13 @@ linters:
     # Custom linters
     - asasalint
     - bodyclose
+    - copyloopvar
     - contextcheck
     - dupl
     - dupword
     - durationcheck
     - errchkjson
     - exhaustive
-    - exportloopref
     - gci
     - gocheckcompilerdirectives
     - gochecknoinits
@@ -52,6 +52,6 @@ linters-settings:
     sections:
       - standard
       - default
-      - prefix(github.com/nussjustin/feature)
+      - prefix(github.com/nussjustin/scache)
       - blank
       - dot
