@@ -79,7 +79,7 @@ func WithJitterFunc(f func() time.Duration) Option {
 
 // WithMaxStale defines the amount of time a stale value can still be used.
 //
-// If a value has been stale for more this duration or longer, the value will be ignored as if there was no value.
+// If a value has been stale for this duration or longer, the value will be ignored as if there was no value.
 //
 // A negative value will allow stale values to be used forever.
 func WithMaxStale(d time.Duration) Option {
