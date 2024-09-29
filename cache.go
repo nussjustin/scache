@@ -129,9 +129,9 @@ type Cache[K comparable, V any] struct {
 	fun     Func[K, V]
 	opts    options
 
-	loadsMu sync.Mutex
+	callsMu sync.Mutex
 	// TODO: Use maphash.Comparable in Go 1.24 to shard the map
-	loads map[K]*call[V]
+	calls map[K]*call[V]
 }
 
 type call[V any] struct {
@@ -168,7 +168,7 @@ func New[K comparable, V any](adapter Adapter[K, V], fun Func[K, V], opts ...Opt
 		fun:     fun,
 		opts:    o,
 
-		loads: make(map[K]*call[V]),
+		calls: make(map[K]*call[V]),
 	}
 }
 
@@ -237,32 +237,32 @@ func (l *Cache[K, V]) Get(ctx context.Context, key K) (V, error) {
 }
 
 func (l *Cache[K, V]) load(key K) *call[V] {
-	l.loadsMu.Lock()
-	defer l.loadsMu.Unlock()
+	l.callsMu.Lock()
+	defer l.callsMu.Unlock()
 
-	load := l.loads[key]
-	if load != nil {
-		return load
+	c := l.calls[key]
+	if c != nil {
+		return c
 	}
 
-	load = &call[V]{done: make(chan struct{})}
+	c = &call[V]{done: make(chan struct{})}
 
-	l.loads[key] = load
+	l.calls[key] = c
 
 	go func() {
 		defer func() {
-			l.loadsMu.Lock()
-			defer l.loadsMu.Unlock()
+			l.callsMu.Lock()
+			defer l.callsMu.Unlock()
 
-			delete(l.loads, key)
+			delete(l.calls, key)
 		}()
 
 		defer func() {
 			select {
 			// If we got a fresh value the channel will be closed already
-			case <-load.done:
+			case <-c.done:
 			default:
-				close(load.done)
+				close(c.done)
 			}
 		}()
 
@@ -272,25 +272,25 @@ func (l *Cache[K, V]) load(key K) *call[V] {
 		func() {
 			defer func() {
 				if v := recover(); v != nil {
-					load.err = wrapRecovered(v)
+					c.err = wrapRecovered(v)
 				}
 			}()
 
-			load.val, load.err = l.fun(ctx, key)
+			c.val, c.err = l.fun(ctx, key)
 		}()
 
 		// Close immediately so that we do not block on the cache update
-		close(load.done)
+		close(c.done)
 
-		if load.err != nil {
+		if c.err != nil {
 			return
 		}
 
 		// Ignore the error. If the user cares about this they can just handle the error in the cache implementation.
-		_ = l.adapter.Set(ctx, key, load.val)
+		_ = l.adapter.Set(ctx, key, c.val)
 	}()
 
-	return load
+	return c
 }
 
 func wrapRecovered(v any) error {
