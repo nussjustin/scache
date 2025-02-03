@@ -88,7 +88,6 @@ func (l *LRU[K, V]) Set(ctx context.Context, key string, value V) error {
 		newItem = oldItem
 	}
 
-	// guaranteed to finish since we checked that our value fits into the total capacity
 	for uint(len(l.m)) >= l.cap {
 		tail := l.tail
 		l.removeLocked(tail)
