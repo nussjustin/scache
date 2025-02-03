@@ -11,27 +11,27 @@ import (
 // Expired items are not automatically removed.
 //
 // TODO: Use maphash.Comparable in Go 1.24 and allow the key to be configured.
-type LRU[K comparable, V any] struct {
+type LRU[K string, V any] struct {
 	mu         sync.Mutex
-	m          map[string]*lruItem[K, V]
+	m          map[K]*lruItem[K, V]
 	head, tail *lruItem[K, V]
 	cap        uint
 }
 
 type lruItem[K comparable, V any] struct {
-	key        string
+	key        K
 	value      V
 	time       time.Time
 	prev, next *lruItem[K, V]
 }
 
 // NewLRU returns an in-memory cache [Adapter] using an implementation of an LRU algorithm.
-func NewLRU[K comparable, V any](size uint) *LRU[K, V] {
-	return &LRU[K, V]{m: make(map[string]*lruItem[K, V]), cap: size}
+func NewLRU[K string, V any](size uint) *LRU[K, V] {
+	return &LRU[K, V]{m: make(map[K]*lruItem[K, V]), cap: size}
 }
 
 // Delete removes the entry with the given key from the cache.
-func (l *LRU[K, V]) Delete(ctx context.Context, key string) error {
+func (l *LRU[K, V]) Delete(ctx context.Context, key K) error {
 	_ = ctx
 
 	l.mu.Lock()
@@ -47,7 +47,7 @@ func (l *LRU[K, V]) Delete(ctx context.Context, key string) error {
 }
 
 // Get implements the [Backend] interface.
-func (l *LRU[K, V]) Get(ctx context.Context, key string) (value V, age time.Duration, err error) {
+func (l *LRU[K, V]) Get(ctx context.Context, key K) (value V, age time.Duration, err error) {
 	_ = ctx
 
 	l.mu.Lock()
@@ -75,7 +75,7 @@ func (l *LRU[K, V]) Len() int {
 // Set implements the [Backend] interface.
 //
 // If the weight of the value is greater than the size of the LRU, the value will be discarded.
-func (l *LRU[K, V]) Set(ctx context.Context, key string, value V) error {
+func (l *LRU[K, V]) Set(ctx context.Context, key K, value V) error {
 	_ = ctx
 
 	l.mu.Lock()
