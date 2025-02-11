@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/maphash"
 	"sync"
 	"time"
 )
@@ -129,9 +130,10 @@ type Cache[K comparable, V any] struct {
 	fun     Func[K, V]
 	opts    options
 
-	callsMu sync.Mutex
-	// TODO: Use maphash.Comparable in Go 1.24 to shard the map
-	calls map[K]*call[V]
+	calls [16]struct {
+		mu sync.Mutex
+		m  map[uint64]*call[V]
+	}
 }
 
 type call[V any] struct {
@@ -140,6 +142,8 @@ type call[V any] struct {
 	val V
 	err error
 }
+
+var cacheSeed = maphash.MakeSeed()
 
 // New returns a new Cache using the given function to calculate / load values.
 //
@@ -167,8 +171,6 @@ func New[K comparable, V any](adapter Adapter[K, V], fun Func[K, V], opts ...Opt
 		adapter: adapter,
 		fun:     fun,
 		opts:    o,
-
-		calls: make(map[K]*call[V]),
 	}
 }
 
@@ -237,24 +239,31 @@ func (l *Cache[K, V]) Get(ctx context.Context, key K) (V, error) {
 }
 
 func (l *Cache[K, V]) load(key K) *call[V] {
-	l.callsMu.Lock()
-	defer l.callsMu.Unlock()
+	hash := maphash.Comparable(cacheSeed, key)
 
-	c := l.calls[key]
+	calls := &l.calls[int(hash%uint64(len(l.calls)))]
+	calls.mu.Lock()
+	defer calls.mu.Unlock()
+
+	c := calls.m[hash]
 	if c != nil {
 		return c
 	}
 
+	if calls.m == nil {
+		calls.m = make(map[uint64]*call[V])
+	}
+
 	c = &call[V]{done: make(chan struct{})}
 
-	l.calls[key] = c
+	calls.m[hash] = c
 
 	go func() {
 		defer func() {
-			l.callsMu.Lock()
-			defer l.callsMu.Unlock()
+			calls.mu.Lock()
+			defer calls.mu.Unlock()
 
-			delete(l.calls, key)
+			delete(calls.m, hash)
 		}()
 
 		defer func() {
