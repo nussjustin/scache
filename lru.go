@@ -2,6 +2,7 @@ package scache
 
 import (
 	"context"
+	"hash/maphash"
 	"sync"
 	"time"
 )
@@ -11,9 +12,9 @@ import (
 // Expired items are not automatically removed.
 //
 // TODO: Use maphash.Comparable in Go 1.24 and allow the key to be configured.
-type LRU[K string, V any] struct {
+type LRU[K comparable, V any] struct {
 	mu         sync.Mutex
-	m          map[K]*lruItem[K, V]
+	m          map[uint64]*lruItem[K, V]
 	head, tail *lruItem[K, V]
 	cap        uint
 }
@@ -23,21 +24,26 @@ type lruItem[K comparable, V any] struct {
 	value      V
 	time       time.Time
 	prev, next *lruItem[K, V]
+	hash       uint64
 }
 
+var lruSeed = maphash.MakeSeed()
+
 // NewLRU returns an in-memory cache [Adapter] using an implementation of an LRU algorithm.
-func NewLRU[K string, V any](size uint) *LRU[K, V] {
-	return &LRU[K, V]{m: make(map[K]*lruItem[K, V]), cap: size}
+func NewLRU[K comparable, V any](size uint) *LRU[K, V] {
+	return &LRU[K, V]{m: make(map[uint64]*lruItem[K, V]), cap: size}
 }
 
 // Delete removes the entry with the given key from the cache.
 func (l *LRU[K, V]) Delete(ctx context.Context, key K) error {
 	_ = ctx
 
+	hash := maphash.Comparable[K](lruSeed, key)
+
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	item := l.m[key]
+	item := l.m[hash]
 	if item == nil {
 		return nil
 	}
@@ -50,10 +56,12 @@ func (l *LRU[K, V]) Delete(ctx context.Context, key K) error {
 func (l *LRU[K, V]) Get(ctx context.Context, key K) (value V, age time.Duration, err error) {
 	_ = ctx
 
+	hash := maphash.Comparable[K](lruSeed, key)
+
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	item := l.m[key]
+	item := l.m[hash]
 	if item == nil {
 		var zero V
 		return zero, 0, ErrNotFound
@@ -78,12 +86,14 @@ func (l *LRU[K, V]) Len() int {
 func (l *LRU[K, V]) Set(ctx context.Context, key K, value V) error {
 	_ = ctx
 
+	hash := maphash.Comparable[K](lruSeed, key)
+
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	var newItem *lruItem[K, V]
 
-	if oldItem := l.m[key]; oldItem != nil {
+	if oldItem := l.m[hash]; oldItem != nil {
 		l.removeLocked(oldItem)
 		newItem = oldItem
 	}
@@ -98,7 +108,7 @@ func (l *LRU[K, V]) Set(ctx context.Context, key K, value V) error {
 		newItem = &lruItem[K, V]{}
 	}
 
-	*newItem = lruItem[K, V]{key: key, value: value, time: time.Now()}
+	*newItem = lruItem[K, V]{key: key, value: value, time: time.Now(), hash: hash}
 
 	l.addLocked(newItem)
 
@@ -107,12 +117,12 @@ func (l *LRU[K, V]) Set(ctx context.Context, key K, value V) error {
 
 func (l *LRU[K, V]) addLocked(item *lruItem[K, V]) {
 	l.attachLocked(item)
-	l.m[item.key] = item
+	l.m[item.hash] = item
 }
 
 func (l *LRU[K, V]) removeLocked(item *lruItem[K, V]) {
 	l.detachLocked(item)
-	delete(l.m, item.key)
+	delete(l.m, item.hash)
 }
 
 func (l *LRU[K, V]) attachLocked(item *lruItem[K, V]) {
