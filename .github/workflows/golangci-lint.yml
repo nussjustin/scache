@@ -12,6 +12,7 @@ jobs:
       - uses: actions/setup-go@v4
         with:
           go-version: ${{ matrix.go-version }}
-      - name: Lint
-        run: |
-          go run github.com/golangci/golangci-lint/cmd/golangci-lint@v1.60.3 run
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.0

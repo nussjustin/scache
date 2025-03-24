@@ -7,7 +7,7 @@ import (
 )
 
 func TestLRU(t *testing.T) {
-	ctx := testCtx(t)
+	ctx := t.Context()
 
 	l := scache.NewLRU[string, string](3)
 

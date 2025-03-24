@@ -3,23 +3,10 @@ package scache_test
 import (
 	"context"
 	"sync"
-	"testing"
 	"time"
 
 	"github.com/nussjustin/scache"
 )
-
-func testCtx(tb testing.TB) context.Context {
-	ctx, cancel := context.WithCancel(context.Background())
-	tb.Cleanup(cancel)
-	return ctx
-}
-
-func testCtxWithCancel(tb testing.TB) (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithCancel(context.Background())
-	tb.Cleanup(cancel)
-	return ctx, cancel
-}
 
 func blockingFunc(ctx context.Context) scache.Func[string, string] {
 	return func(funcCtx context.Context, _ string) (string, error) {
@@ -146,6 +133,6 @@ func (s staticValueAdapter) Get(_ context.Context, key string) (value string, ag
 	return key, s.age, nil
 }
 
-func (s staticValueAdapter) Set(ctx context.Context, key string, value string) error {
+func (s staticValueAdapter) Set(context.Context, string, string) error {
 	return nil
 }

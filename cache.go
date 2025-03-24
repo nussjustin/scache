@@ -241,6 +241,7 @@ func (l *Cache[K, V]) Get(ctx context.Context, key K) (V, error) {
 func (l *Cache[K, V]) load(key K) *call[V] {
 	hash := maphash.Comparable(cacheSeed, key)
 
+	//nolint:gosec
 	calls := &l.calls[int(hash%uint64(len(l.calls)))]
 	calls.mu.Lock()
 	defer calls.mu.Unlock()

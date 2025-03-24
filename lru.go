@@ -10,8 +10,6 @@ import (
 // LRU implements an in-memory [Adapter] using an implementation of an LRU algorithm.
 //
 // Expired items are not automatically removed.
-//
-// TODO: Use maphash.Comparable in Go 1.24 and allow the key to be configured.
 type LRU[K comparable, V any] struct {
 	mu         sync.Mutex
 	m          map[uint64]*lruItem[K, V]

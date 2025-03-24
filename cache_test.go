@@ -17,7 +17,7 @@ func assertCacheContains(
 ) {
 	tb.Helper()
 
-	gotValue, _, gotErr := a.Get(context.Background(), key)
+	gotValue, _, gotErr := a.Get(tb.Context(), key)
 
 	if gotValue != value {
 		tb.Errorf("got cached value %q, want %q", gotValue, value)
@@ -35,7 +35,7 @@ func assertCacheNotContains(
 ) {
 	tb.Helper()
 
-	gotValue, _, gotErr := a.Get(context.Background(), key)
+	gotValue, _, gotErr := a.Get(tb.Context(), key)
 
 	if gotErr == nil {
 		tb.Errorf("got cached value %q, wanted miss", gotValue)
@@ -48,9 +48,9 @@ func assertCacheNotContains(
 }
 
 func assertGet(
+	ctx context.Context,
 	tb testing.TB,
 	c *scache.Cache[string, string],
-	ctx context.Context,
 	key string,
 	value string,
 	err error,
@@ -70,49 +70,49 @@ func assertGet(
 
 func TestLoad(t *testing.T) {
 	t.Run("Expired Context", func(t *testing.T) {
-		ctx, cancel := testCtxWithCancel(t)
+		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 
 		c := scache.New(panicAdapter{}, panicFunc("unreachable"))
 
-		assertGet(t, c, ctx, "new-key", "", ctx.Err())
+		assertGet(ctx, t, c, "new-key", "", ctx.Err())
 	})
 
 	t.Run("Get error", func(t *testing.T) {
-		ctx := testCtx(t)
+		ctx := t.Context()
 
 		err := errors.New("test error")
 
 		c := scache.New(errorAdapter{err}, panicFunc("unreachable"))
 
-		assertGet(t, c, ctx, "new-key", "", err)
+		assertGet(ctx, t, c, "new-key", "", err)
 	})
 
 	t.Run("Fresh", func(t *testing.T) {
-		ctx := testCtx(t)
+		ctx := t.Context()
 
 		a := newMemoryAdapter()
 		a.setWithAge("existing-key", "initial value", 0)
 
 		c := scache.New(a, panicFunc("unreachable"))
 
-		assertGet(t, c, ctx, "existing-key", "initial value", nil)
+		assertGet(ctx, t, c, "existing-key", "initial value", nil)
 	})
 
 	t.Run("Miss", func(t *testing.T) {
 		t.Run("Loaded", func(t *testing.T) {
-			ctx := testCtx(t)
+			ctx := t.Context()
 
 			a := newMemoryAdapter()
 
 			c := scache.New(a, valueFunc("computed value"))
 
-			assertGet(t, c, ctx, "new-key", "computed value", nil)
+			assertGet(ctx, t, c, "new-key", "computed value", nil)
 			assertCacheContains(t, a, "new-key", "computed value")
 		})
 
 		t.Run("Caller Canceled", func(t *testing.T) {
-			ctx := testCtx(t)
+			ctx := t.Context()
 
 			callCtx, callCancel := context.WithCancelCause(ctx)
 			defer callCancel(context.Canceled)
@@ -124,12 +124,12 @@ func TestLoad(t *testing.T) {
 				return blockingFunc(ctx)(funcCtx, key)
 			})
 
-			assertGet(t, c, callCtx, "new-key", "", context.Canceled)
+			assertGet(callCtx, t, c, "new-key", "", context.Canceled)
 			assertCacheNotContains(t, a, "new-key")
 		})
 
 		t.Run("Load Canceled", func(t *testing.T) {
-			ctx := testCtx(t)
+			ctx := t.Context()
 
 			a := newMemoryAdapter()
 
@@ -144,18 +144,18 @@ func TestLoad(t *testing.T) {
 					}
 				}))
 
-			assertGet(t, c, ctx, "new-key", "", err)
+			assertGet(ctx, t, c, "new-key", "", err)
 			assertCacheNotContains(t, a, "new-key")
 		})
 
 		t.Run("Load Panic", func(t *testing.T) {
-			ctx := testCtx(t)
+			ctx := t.Context()
 
 			err := errors.New("test error")
 
 			c := scache.New(noopAdapter{}, panicFunc(err))
 
-			assertGet(t, c, ctx, "new-key", "", err)
+			assertGet(ctx, t, c, "new-key", "", err)
 		})
 	})
 
@@ -163,7 +163,7 @@ func TestLoad(t *testing.T) {
 		jitterFunc := func() time.Duration { return time.Second }
 
 		t.Run("No refresh", func(t *testing.T) {
-			ctx := testCtx(t)
+			ctx := t.Context()
 
 			a := newMemoryAdapter()
 			a.setWithAge("existing-key", "initial value", time.Second)
@@ -174,12 +174,12 @@ func TestLoad(t *testing.T) {
 				scache.WithStaleAfter(time.Second),
 				scache.WithMaxStale(3*time.Second))
 
-			assertGet(t, c, ctx, "existing-key", "initial value", nil)
+			assertGet(ctx, t, c, "existing-key", "initial value", nil)
 			assertCacheContains(t, a, "existing-key", "initial value")
 		})
 
 		t.Run("Refresh", func(t *testing.T) {
-			ctx := testCtx(t)
+			ctx := t.Context()
 
 			a := newMemoryAdapter()
 			a.setWithAge("existing-key", "initial value", time.Second)
@@ -193,7 +193,7 @@ func TestLoad(t *testing.T) {
 				scache.WithStaleAfter(time.Second),
 				scache.WithMaxStale(3*time.Second))
 
-			assertGet(t, c, ctx, "existing-key", "initial value", nil)
+			assertGet(ctx, t, c, "existing-key", "initial value", nil)
 
 			select {
 			case key := <-waitC:
@@ -208,7 +208,7 @@ func TestLoad(t *testing.T) {
 		})
 
 		t.Run("Refresh and wait", func(t *testing.T) {
-			ctx := testCtx(t)
+			ctx := t.Context()
 
 			a := newMemoryAdapter()
 			a.setWithAge("existing-key", "initial value", time.Second)
@@ -217,7 +217,7 @@ func TestLoad(t *testing.T) {
 				valueFunc("computed value"),
 				scache.WithRefreshStale(true),
 				scache.WithWaitForRefresh(1),
-				scache.WithTimerFunc(func(d time.Duration) <-chan time.Time {
+				scache.WithTimerFunc(func(time.Duration) <-chan time.Time {
 					ch := make(chan time.Time)
 
 					context.AfterFunc(ctx, func() {
@@ -230,12 +230,12 @@ func TestLoad(t *testing.T) {
 				scache.WithStaleAfter(time.Second),
 				scache.WithMaxStale(3*time.Second))
 
-			assertGet(t, c, ctx, "existing-key", "computed value", nil)
+			assertGet(ctx, t, c, "existing-key", "computed value", nil)
 			assertCacheContains(t, a, "existing-key", "computed value")
 		})
 
 		t.Run("Refresh and wait with fresh before jitter", func(t *testing.T) {
-			ctx := testCtx(t)
+			ctx := t.Context()
 
 			a := newMemoryAdapter()
 			a.setWithAge("existing-key", "initial value", time.Second)
@@ -246,7 +246,7 @@ func TestLoad(t *testing.T) {
 				valueFunc("computed value"),
 				scache.WithRefreshStale(true),
 				scache.WithWaitForRefresh(1),
-				scache.WithTimerFunc(func(d time.Duration) <-chan time.Time {
+				scache.WithTimerFunc(func(time.Duration) <-chan time.Time {
 					ch := make(chan time.Time)
 
 					context.AfterFunc(ctx, func() {
@@ -259,7 +259,7 @@ func TestLoad(t *testing.T) {
 				scache.WithStaleAfter(2*time.Second),
 				scache.WithMaxStale(3*time.Second))
 
-			assertGet(t, c, ctx, "existing-key", "initial value", nil)
+			assertGet(ctx, t, c, "existing-key", "initial value", nil)
 
 			select {
 			case key := <-waitC:
@@ -274,7 +274,7 @@ func TestLoad(t *testing.T) {
 		})
 
 		t.Run("Refresh and wait timeout", func(t *testing.T) {
-			ctx := testCtx(t)
+			ctx := t.Context()
 
 			a := newMemoryAdapter()
 			a.setWithAge("existing-key", "initial value", time.Second)
@@ -283,7 +283,7 @@ func TestLoad(t *testing.T) {
 			waitC := a.changeCh()
 
 			c := scache.New(a,
-				func(ctx context.Context, key string) (string, error) {
+				func(ctx context.Context, _ string) (string, error) {
 					select {
 					case value := <-valueC:
 						return value, nil
@@ -293,7 +293,7 @@ func TestLoad(t *testing.T) {
 				},
 				scache.WithRefreshStale(true),
 				scache.WithWaitForRefresh(1),
-				scache.WithTimerFunc(func(d time.Duration) <-chan time.Time {
+				scache.WithTimerFunc(func(time.Duration) <-chan time.Time {
 					ch := make(chan time.Time)
 					close(ch)
 					return ch
@@ -302,7 +302,7 @@ func TestLoad(t *testing.T) {
 				scache.WithStaleAfter(time.Second),
 				scache.WithMaxStale(3*time.Second))
 
-			assertGet(t, c, ctx, "existing-key", "initial value", nil)
+			assertGet(ctx, t, c, "existing-key", "initial value", nil)
 
 			valueC <- "computed value"
 
@@ -320,7 +320,7 @@ func TestLoad(t *testing.T) {
 
 		// Same as "Refresh" but with no minimum age for staleness.
 		t.Run("Refresh immediately", func(t *testing.T) {
-			ctx := testCtx(t)
+			ctx := t.Context()
 
 			a := newMemoryAdapter()
 			a.setWithAge("existing-key", "initial value", 0)
@@ -332,7 +332,7 @@ func TestLoad(t *testing.T) {
 				scache.WithRefreshStale(true),
 				scache.WithStaleAfter(0))
 
-			assertGet(t, c, ctx, "existing-key", "initial value", nil)
+			assertGet(ctx, t, c, "existing-key", "initial value", nil)
 
 			select {
 			case key := <-waitC:
@@ -349,7 +349,7 @@ func TestLoad(t *testing.T) {
 
 	t.Run("Expired", func(t *testing.T) {
 		t.Run("Loaded", func(t *testing.T) {
-			ctx := testCtx(t)
+			ctx := t.Context()
 
 			a := newMemoryAdapter()
 			a.setWithAge("existing-key", "initial value", 2*time.Second)
@@ -358,12 +358,12 @@ func TestLoad(t *testing.T) {
 				scache.WithStaleAfter(time.Second),
 				scache.WithMaxStale(time.Second))
 
-			assertGet(t, c, ctx, "new-key", "computed value", nil)
+			assertGet(ctx, t, c, "new-key", "computed value", nil)
 			assertCacheContains(t, a, "new-key", "computed value")
 		})
 
 		t.Run("Caller Canceled", func(t *testing.T) {
-			ctx := testCtx(t)
+			ctx := t.Context()
 
 			callCtx, callCancel := context.WithCancel(ctx)
 			defer callCancel()
@@ -379,12 +379,12 @@ func TestLoad(t *testing.T) {
 				scache.WithStaleAfter(time.Second),
 				scache.WithMaxStale(time.Second))
 
-			assertGet(t, c, callCtx, "existing-key", "", context.Canceled)
+			assertGet(callCtx, t, c, "existing-key", "", context.Canceled)
 			assertCacheContains(t, a, "existing-key", "initial value")
 		})
 
 		t.Run("Load Canceled", func(t *testing.T) {
-			ctx := testCtx(t)
+			ctx := t.Context()
 
 			a := newMemoryAdapter()
 			a.setWithAge("existing-key", "initial value", 2*time.Second)
@@ -402,7 +402,7 @@ func TestLoad(t *testing.T) {
 					}
 				}))
 
-			assertGet(t, c, ctx, "existing-key", "", err)
+			assertGet(ctx, t, c, "existing-key", "", err)
 			assertCacheContains(t, a, "existing-key", "initial value")
 		})
 	})
@@ -412,46 +412,46 @@ var benchmarkDst string
 
 func BenchmarkLoad(b *testing.B) {
 	b.Run("Hit", func(b *testing.B) {
-		ctx := testCtx(b)
+		ctx := b.Context()
 
 		c := scache.New(staticValueAdapter{}, panicFunc("unreachable"))
 
-		for range b.N {
+		for b.Loop() {
 			benchmarkDst, _ = c.Get(ctx, "benchmark")
 		}
 	})
 
 	b.Run("Hit with refresh", func(b *testing.B) {
-		ctx := testCtx(b)
+		ctx := b.Context()
 
 		c := scache.New(staticValueAdapter{time.Second}, valueFunc("benchmark"),
 			scache.WithStaleAfter(time.Millisecond),
 			scache.WithRefreshStale(true))
 
-		for range b.N {
+		for b.Loop() {
 			benchmarkDst, _ = c.Get(ctx, "benchmark")
 		}
 	})
 
 	b.Run("Hit with wait for refresh", func(b *testing.B) {
-		ctx := testCtx(b)
+		ctx := b.Context()
 
 		c := scache.New(staticValueAdapter{time.Second}, valueFunc("benchmark"),
 			scache.WithStaleAfter(time.Millisecond),
 			scache.WithRefreshStale(true),
 			scache.WithWaitForRefresh(time.Hour))
 
-		for range b.N {
+		for b.Loop() {
 			benchmarkDst, _ = c.Get(ctx, "benchmark")
 		}
 	})
 
 	b.Run("Miss", func(b *testing.B) {
-		ctx := testCtx(b)
+		ctx := b.Context()
 
 		c := scache.New(noopAdapter{}, valueFunc("benchmark"))
 
-		for range b.N {
+		for b.Loop() {
 			benchmarkDst, _ = c.Get(ctx, "benchmark")
 		}
 	})

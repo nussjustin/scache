@@ -1,57 +1,107 @@
-issues:
-  exclude-files:
-    - '_test.go$'
+version: "2"
 linters:
+  default: none
   enable:
-    # Default linters, specified for clarity
-    - errcheck
-    - gosimple
-    - govet
-    - ineffassign
-    - staticcheck
-    - unused
-    # Custom linters
     - asasalint
+    - asciicheck
+    - bidichk
     - bodyclose
-    - copyloopvar
+    - canonicalheader
+    - containedctx
     - contextcheck
-    - dupl
+    - copyloopvar
+    - decorder
     - dupword
     - durationcheck
+    - errcheck
     - errchkjson
+    - errorlint
     - exhaustive
-    - gci
+    - exptostd
+    - fatcontext
     - gocheckcompilerdirectives
-    - gochecknoinits
-    - goconst
+    - gocritic
     - godot
-    - gofumpt
+    - godox
+    - goheader
+    - goprintffuncname
     - gosec
     - gosmopolitan
+    - govet
+    - grouper
+    - iface
+    - importas
+    - inamedparam
+    - ineffassign
+    - interfacebloat
+    - intrange
+    - lll
     - loggercheck
     - makezero
+    - mirror
     - misspell
+    - mnd
     - musttag
+    - nestif
     - nilerr
+    - nilnesserr
     - noctx
     - nolintlint
     - nosprintfhostport
+    - perfsprint
     - prealloc
+    - predeclared
+    - promlinter
+    - protogetter
+    - reassign
+    - recvcheck
     - revive
     - rowserrcheck
+    - sloglint
+    - spancheck
     - sqlclosecheck
+    - staticcheck
     - tagalign
     - tagliatelle
+    - testableexamples
+    - testifylint
     - testpackage
     - thelper
     - tparallel
     - unconvert
+    - unused
+    - usetesting
     - wastedassign
-linters-settings:
-  gci:
-    sections:
-      - standard
-      - default
-      - prefix(github.com/nussjustin/scache)
-      - blank
-      - dot
+    - whitespace
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gci
+    - gofumpt
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(github.com/nussjustin/scache)
+        - blank
+        - dot
+        - alias
+        - localmodule
+      custom-order: true
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
